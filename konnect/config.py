@@ -29,11 +29,24 @@ DEFAULT_CONFIG_PATHS = [
 ]
 
 
+# Default firmware string per printer_type. Connect's UIs gate some
+# features on the reported firmware version (notably the upload button
+# on modern dashboards is disabled for very old versions), so each
+# type gets a plausible-looking version that unlocks its dashboard.
+# The `+6969` suffix distinguishes konnect from real Prusa builds.
+_FIRMWARE_BY_TYPE: dict[str, str] = {
+    "HT90":    "1.3.19+6969",   # real HT90 releases look like 1.3.19
+    "MK4S":    "6.4.19+6969",   # Buddy firmware scheme
+    "COREONE": "6.4.19+6969",   # Buddy firmware scheme
+}
+
+
 @dataclass
 class Config:
-    # HT90 is the only officially-supported type in the UI right now
-    # (see konnect/web.py SUPPORTED_PRINTER_TYPES for rationale).
-    # The stock SDK already ships with HT90 — no enum extension needed.
+    # HT90 is the default — the only type that gets the full workflow
+    # (file listing + upload + Set Ready + chamber controls) in
+    # Connect's UI. MK4S / COREONE are also supported but have a
+    # known upload limitation. See konnect/web.py.
     printer_type: PrinterType = PrinterType.HT90
     moonraker_host: str = "127.0.0.1"
     moonraker_port: int = 7125
@@ -51,12 +64,10 @@ class Config:
     # stdout/journald is used in that case.
     log_path: str = str(Path.home() / "printer_data" / "logs" / "konnect.log")
     # Override the firmware version string reported to Prusa Connect.
-    # Empty = use Klippy's reported OS distro version. Default is
-    # "1.3.19+6969" which matches the HT90 firmware numbering
-    # convention (real HT90 firmware releases look like "1.3.19") with
-    # a distinguishing suffix so Connect's Firmware field shows a
-    # plausible HT90-style string.
-    firmware_version: str = "1.3.19+6969"
+    # Empty (default) means "derive from printer_type" via
+    # _FIRMWARE_BY_TYPE above. Set explicitly in konnect.cfg if you
+    # need a specific string.
+    firmware_version: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -104,6 +115,18 @@ class Config:
         self.firmware_version = section.get(
             "firmware_version", self.firmware_version,
         ).strip()
+
+    def effective_firmware(self) -> str:
+        """Return the firmware string to report to Connect.
+
+        If ``firmware_version`` is set in konnect.cfg, use it verbatim;
+        otherwise fall back to the type-appropriate default. Returns an
+        empty string only when we have neither — in which case the
+        caller should fall back to Klippy's system_info value.
+        """
+        if self.firmware_version:
+            return self.firmware_version
+        return _FIRMWARE_BY_TYPE.get(self.printer_type.name, "")
 
 
 def _expand(path: str) -> str:

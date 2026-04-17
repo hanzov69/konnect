@@ -27,6 +27,7 @@ from .camera import CrowsnestDriver
 from .config import Config
 from .db import Database
 from .moonraker import Moonraker
+from . import encrypted_download, modern_fs
 from .util import (
     InfinityThread,
     default_serial_number,
@@ -102,6 +103,18 @@ class KonnectPrinter(SDKPrinter):
         self._register_handler("START_PRINT", self._h_start)
         self._register_handler("SET_PRINTER_READY", self._h_set_ready)
         self._register_handler("SET_VALUE", self._h_set_value)
+        # Buddy-style per-path enumeration. Overrides the SDK default
+        # which returns a legacy flat-files response MK4/Core One
+        # dashboards ignore.
+        self._register_handler("SEND_FILE_INFO", self._h_send_file_info)
+        # Buddy-style encrypted-upload. The enum extension for this
+        # command lives in konnect.printer_types; if that hasn't run
+        # the handler simply skips registration (no regression vs
+        # older konnect versions).
+        self._register_handler(
+            "START_ENCRYPTED_DOWNLOAD",
+            self._h_start_encrypted_download,
+        )
 
     def _register_handler(self, command_name: str, handler) -> None:
         """Attach a Connect command handler if the SDK knows the command."""
@@ -148,14 +161,11 @@ class KonnectPrinter(SDKPrinter):
                 continue
             machine_info = self.moonraker("machine.system_info")
 
-        # Prefer an operator-provided firmware string from konnect.cfg;
-        # fall back to whatever Moonraker/Klippy reports for OS distro
-        # version. Connect shows this verbatim in the printer info
-        # panel, so it's useful to override if you want to match a
-        # particular firmware naming scheme (e.g. "3.14.1-6969" to
-        # mirror Prusa's versioning for the printer type being
-        # advertised).
-        self.firmware = self.cfg.firmware_version or nested_get(
+        # Firmware string reported to Connect. Operator override in
+        # konnect.cfg wins; otherwise use the type-appropriate default
+        # (see _FIRMWARE_BY_TYPE in config.py). Falls back to Klippy's
+        # OS distro version only when neither is available.
+        self.firmware = self.cfg.effective_firmware() or nested_get(
             machine_info, "system_info", "distribution", "version",
             default="klipper",
         )
@@ -241,6 +251,107 @@ class KonnectPrinter(SDKPrinter):
         self.db.set("connect", "tls", value=tls)
         self.db.set("connect", "port", value=port)
 
+    # ---- Buddy-style file protocol shim --------------------------------
+    #
+    # For modern Prusa types (MK4, MK4S, Core One, etc.) Connect's
+    # dashboard ignores the legacy `files` tree in INFO and instead
+    # reads a `storages` array + issues per-path SEND_FILE_INFO
+    # commands. We augment the SDK's INFO payload with storages and
+    # override SEND_FILE_INFO to speak the new protocol. For legacy
+    # types (HT90 etc.) the extra fields are harmless — Connect
+    # ignores what its dashboard doesn't need.
+
+    # The mountpoint we advertise. Matches Buddy firmware
+    # (/usb is what real MK4-family printers expose).
+    _MODERN_MOUNTPOINT = "/usb"
+
+    def get_info(self) -> dict[str, Any]:
+        info = super().get_info()
+        info["storages"] = modern_fs.build_storages(
+            self._MODERN_MOUNTPOINT, self.cfg.local_gcode_path,
+        )
+        # Buddy-style fields that MK4/Core One dashboards inspect
+        # before they decide the printer is usable (enables the
+        # upload button, queue controls, etc.). Keeping them set
+        # unconditionally — legacy HT90 dashboards ignore them.
+        info["sn"] = self.sn or ""
+        info["appendix"] = False
+        info["transfer_paused"] = False
+        # Nozzle + tools. Connect's modern dashboards gate several
+        # UI affordances (upload, start print) on having a valid
+        # `tools` object describing at least one slot. We emit a
+        # single slot matching Buddy's MK4S layout. Values come
+        # from moonraker's save_variables if available, else
+        # reasonable defaults.
+        material = self.actions.info.tool.material if (
+            hasattr(self, "actions") and self.actions.info.tool.material
+        ) else "---"
+        nozzle_d = self.actions.info.tool.nozzle_diameter if (
+            hasattr(self, "actions") and self.actions.info.tool.nozzle_diameter
+        ) else 0.4
+        info["nozzle_diameter"] = nozzle_d
+        info["tools"] = {
+            "1": {
+                "nozzle_diameter": nozzle_d,
+                "high_flow": False,
+                "hardened": False,
+                "material": material,
+            },
+        }
+        return info
+
+    def _h_start_encrypted_download(self, _command: SDKCommand) -> dict[str, Any]:
+        """Refuse Connect's encrypted-upload command.
+
+        We have the machinery to fetch + AES-CTR decrypt (see
+        :mod:`konnect.encrypted_download`), but Connect only serves the
+        ``/f/<iv>/raw`` ciphertext to clients that hold the real
+        Buddy-firmware WebSocket session on ``/p/ws``. The SDK uses
+        HTTPS long-polling, so we can't complete the transfer.
+        Declining cleanly (instead of ACCEPTED-then-hung) tells
+        Connect's UI to surface an error quickly rather than retrying
+        the same iv forever.
+
+        If you want uploads to work: register as ``HT90`` which uses
+        the legacy ``START_CONNECT_DOWNLOAD`` protocol, which the SDK's
+        DownloadMgr handles end-to-end over HTTPS.
+        """
+        raise RuntimeError(
+            "START_ENCRYPTED_DOWNLOAD requires the Buddy WebSocket "
+            "protocol (/p/ws) which konnect's long-polling SDK does "
+            "not implement. Use printer_type = HT90 for uploads."
+        )
+
+    def _h_send_file_info(self, command: SDKCommand) -> dict[str, Any]:
+        """Respond to Connect's SEND_FILE_INFO with a Buddy-style payload.
+
+        For a directory path, returns ``children`` + metadata so
+        Connect's file-browser widget can list contents. For a file
+        path, returns file metadata. Accepts the Buddy mountpoint
+        (``/usb``) and also the legacy ``/<local_fs_name>`` prefix so
+        HT90 / i3 dashboards keep working — both map to the same
+        backing directory.
+        """
+        raw = command.kwargs.get("path", self._MODERN_MOUNTPOINT)
+        # Translate the legacy /<local_fs_name> prefix to /usb so the
+        # same backing dir serves both protocols.
+        legacy_prefix = f"/{self.cfg.local_fs_name}"
+        if raw == legacy_prefix or raw.startswith(legacy_prefix + "/"):
+            raw = self._MODERN_MOUNTPOINT + raw[len(legacy_prefix):]
+
+        data = modern_fs.file_info(
+            self.cfg.local_gcode_path,
+            self._MODERN_MOUNTPOINT,
+            raw,
+        )
+        if data is None:
+            raise RuntimeError(f"File not found: {command.kwargs.get('path')}")
+        return {
+            "source": Source.CONNECT,
+            "event": Event.FILE_INFO,
+            **data,
+        }
+
     # ---- command handlers ---------------------------------------------
 
     def _command_tick(self) -> None:
@@ -283,13 +394,24 @@ class KonnectPrinter(SDKPrinter):
             raise RuntimeError("Can't print now")
         if not command.kwargs:
             raise RuntimeError("Nothing to print")
-        # Connect sends path like "/local/foo.gcode"; strip the leading
-        # "/local/" to get the moonraker-relative filename.
+        # Connect sends either the legacy `/<local_fs_name>/foo.gcode`
+        # (HT90 / i3 dashboards) or the Buddy-style
+        # `/<modern_mountpoint>/foo.gcode` (MK4 / Core One). Accept
+        # both and strip to the moonraker-relative filename.
         raw_path = command.kwargs.get("path", "")
-        prefix = f"/{self.cfg.local_fs_name}/"
-        if not raw_path.startswith(prefix):
-            raise RuntimeError(f"Path must start with {prefix}")
-        filename = raw_path[len(prefix):]
+        filename = None
+        for prefix in (
+            f"/{self.cfg.local_fs_name}/",
+            self._MODERN_MOUNTPOINT + "/",
+        ):
+            if raw_path.startswith(prefix):
+                filename = raw_path[len(prefix):]
+                break
+        if filename is None:
+            raise RuntimeError(
+                f"Path must start with /{self.cfg.local_fs_name}/ or "
+                f"{self._MODERN_MOUNTPOINT}/ — got {raw_path!r}"
+            )
         if not filename:
             raise RuntimeError("Empty filename")
         self.actions.job.start_cmd_id = command.command_id

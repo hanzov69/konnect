@@ -144,6 +144,16 @@ button.secondary { background: transparent; }
   font-size: 12px;
   font-style: italic;
 }
+.type-card .warn {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--danger);
+  background: rgba(231, 76, 60, 0.08);
+  color: #ffb4b4;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 0 3px 3px 0;
+}
 
 .code-box {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

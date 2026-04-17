@@ -21,6 +21,9 @@ dependencies = [
     "websocket-client>=1.5",
     "requests>=2.28",
     "qrcode[pil]>=7.4",
+    # AES-128-CTR for decrypting uploaded files from Connect
+    # (Buddy START_ENCRYPTED_DOWNLOAD protocol).
+    "cryptography>=41.0",
 ]
 
 [project.optional-dependencies]

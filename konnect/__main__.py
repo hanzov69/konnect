@@ -13,6 +13,16 @@ from threading import Event
 from prusa.connect.printer import __version__ as sdk_version
 from prusa.connect.printer import const
 
+# Extend the SDK's PrinterType enum with newer Prusa models (MK4S,
+# Core One, etc.). These aren't in the stock SDK, but konnect
+# implements both the legacy and Buddy-style file protocols (see
+# konnect.modern_fs), so all three — HT90, MK4S, COREONE — are
+# supported end-to-end. Import installs the members into the enum
+# before anything else touches PrinterType.
+from . import printer_types  # noqa: F401
+printer_types.install()
+printer_types.install_commands()
+
 # Optional HTTP-traffic spy (debug only). Gated on an env var so it
 # costs nothing in production; set KONNECT_HTTP_SPY=1 in the service
 # unit (via /etc/systemd/system/konnect.service.d/spy.conf) to enable.
@@ -20,11 +30,6 @@ from prusa.connect.printer import const
 # /tmp/konnect_http.log — useful for diagnosing Connect-side issues.
 if os.environ.get("KONNECT_HTTP_SPY"):
     from . import _http_spy  # noqa: F401
-
-# PrinterType enum extensions (MK4S, COREONE, etc.) are available in
-# konnect.printer_types but not auto-installed — only HT90 is supported
-# end-to-end by Connect's UI for our use case. See that module for
-# rationale and how to re-enable.
 
 from . import __version__
 from .config import Config

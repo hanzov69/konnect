@@ -9,19 +9,22 @@
 
 # Which PrinterType the SDK advertises to Prusa Connect.
 #
-# HT90 is the only type konnect currently supports end-to-end —
-# Connect's HT90 dashboard renders the legacy-protocol file browser
-# (so uploads and listing work), honors the Set Ready / Cancel Ready
-# commands, and shows chamber temperature controls. MK4-family and
-# Core One dashboards look slick but their file-browser widgets
-# ignore the SDK's legacy `files` tree, so listing + upload from
-# Connect doesn't work for those types.
+#   HT90 (recommended)  — the only type with full Connect-side
+#       workflow: file listing + upload + Set Ready + chamber
+#       controls. Uses the legacy file protocol the SDK supports
+#       end-to-end. Connect shows "Prusa Pro HT90" dashboard.
 #
-# Other SDK PrinterType members CAN be set here but the onboarding
-# UI and this doc treat them as advanced / unsupported:
-#   I3MK3 / I3MK3S / I3MK25 / I3MK25S / M1 / SL1 / SL1S
-# MK4, MK4S, COREONE, XL, MINI, etc. can be enabled by calling
-# konnect.printer_types.install() from __main__.py.
+#   MK4S   — modern MK4S dashboard. File listing, Set Ready, and
+#       telemetry work. ⚠ Uploading files from Connect's UI does
+#       NOT work (Buddy WebSocket protocol, not implemented here);
+#       upload via Mainsail/Fluidd and files appear in Connect's
+#       list via the Buddy-style SEND_FILE_INFO path.
+#
+#   COREONE — Core One dashboard, same capabilities as MK4S plus
+#       chamber temperature controls. Same upload limitation.
+#
+# Other SDK PrinterType members (I3MK3S, MK4, XL, MINI, SL1, etc.)
+# can be set here but aren't surfaced in the onboarding UI.
 #
 # ⚠ Changing printer_type after registering makes Connect see a
 #   different printer under the same fingerprint. Unregister first
@@ -55,8 +58,10 @@ crowsnest_config = ${HOME}/printer_data/config/crowsnest.conf
 log_path = ${HOME}/printer_data/logs/konnect.log
 
 # Firmware version string reported to Prusa Connect's "Firmware" field.
-# Default "1.3.19+6969" matches the HT90 firmware numbering convention
-# (the suffix distinguishes konnect from a real HT90 build). Override
-# if you want a different string; leave empty to use Klippy's reported
-# distro version (less realistic from Connect's perspective).
-firmware_version = 1.3.19+6969
+# Leave unset (or empty) to use the type-appropriate default:
+#   HT90    → 1.3.19+6969   (matches real HT90 release numbering)
+#   MK4S    → 6.4.19+6969   (Buddy firmware numbering — high enough
+#                            to unlock Connect's upload button)
+#   COREONE → 6.4.19+6969   (Buddy firmware numbering)
+# Only set explicitly if you need a specific version string.
+# firmware_version =

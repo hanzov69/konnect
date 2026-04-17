@@ -49,22 +49,31 @@
   };
 
   /* ---- step 1: printer type ------------------------------------------ */
-  const renderTypes = (list, current) => {
+  // Small helper: text→HTML escape so a warning containing <>&" renders
+  // as text, not as markup.
+  const esc = (s) => String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+  const renderTypes = (list, current, defaultType) => {
     const container = $("#type-list");
     container.innerHTML = "";
-    // Sort recommended picks first: I3MK3S, HT90, then the rest.
-    const order = { I3MK3S: 0, HT90: 1 };
-    list.sort((a, b) => (order[a.name] ?? 99) - (order[b.name] ?? 99));
+    // Server returns types in recommended order. Pre-select the
+    // server-provided `default` (falls back to current, then first).
+    const preselect = current || defaultType || (list[0] && list[0].name);
     for (const t of list) {
       const card = document.createElement("div");
       card.className = "type-card";
-      if (t.name === current) card.classList.add("selected");
+      if (t.name === preselect) card.classList.add("selected");
       card.dataset.name = t.name;
       card.innerHTML = `
-        <div class="name">${t.label}</div>
-        <div class="desc">${t.description}</div>
+        <div class="name">${esc(t.label)}</div>
+        <div class="desc">${esc(t.description)}</div>
         ${t.recommended_for
-          ? `<div class="rec">Best for: ${t.recommended_for}</div>`
+          ? `<div class="rec">Best for: ${esc(t.recommended_for)}</div>`
+          : ""}
+        ${t.warning
+          ? `<div class="warn">${esc(t.warning)}</div>`
           : ""}
       `;
       card.addEventListener("click", () => {
@@ -76,7 +85,7 @@
       });
       container.appendChild(card);
     }
-    if (current) state.selectedType = current;
+    state.selectedType = preselect;
     $("#type-next").disabled = !state.selectedType;
   };
 
@@ -249,14 +258,14 @@
       state.printer = p;
       state.connection = c;
       state.types = pt.types;
-      renderTypes(pt.types, pt.current);
+      renderTypes(pt.types, pt.current, pt.default);
 
       // If already registered, jump straight to dashboard.
       if (c.registration === "FINISHED" && c.token) {
         gotoDashboard();
       } else if (pt.types.length <= 1) {
         // Single supported type — skip the picker entirely.
-        state.selectedType = pt.current;
+        state.selectedType = pt.current || pt.default;
         gotoIdentity();
       } else {
         gotoTypePicker();

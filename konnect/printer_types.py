@@ -59,4 +59,38 @@ def install() -> None:
         _extend(name, value)
 
 
-# No auto-install. Call install() explicitly if you want MK4S/COREONE.
+# ---- Command enum extensions --------------------------------------
+#
+# Same mechanism as PrinterType above, for Commands the SDK doesn't
+# know about but Prusa's Buddy firmware dispatches. Critically this
+# includes START_ENCRYPTED_DOWNLOAD — the AES-128-CTR file-upload
+# command Connect uses for MK4/MK4S/Core One.
+
+from prusa.connect.printer.const import Command  # noqa: E402
+
+_COMMAND_EXTENSIONS: tuple[tuple[str, str], ...] = (
+    # Encrypted file upload from Connect to the printer — matches
+    # src/connect/command.cpp in Prusa-Firmware-Buddy.
+    ("START_ENCRYPTED_DOWNLOAD", "START_ENCRYPTED_DOWNLOAD"),
+    # Inline (non-encrypted) variant Buddy also understands; unused
+    # in current Connect deployments but registered defensively.
+    ("START_INLINE_DOWNLOAD", "START_INLINE_DOWNLOAD"),
+)
+
+
+def _extend_command(name: str, value: str) -> None:
+    if name in Command._member_map_:
+        return
+    member = object.__new__(Command)
+    member._name_ = name  # noqa: SLF001
+    member._value_ = value  # noqa: SLF001
+    Command._member_map_[name] = member
+    Command._value2member_map_[value] = member
+    Command._member_names_.append(name)
+    type.__setattr__(Command, name, member)
+
+
+def install_commands() -> None:
+    """Add every extension member to Command."""
+    for name, value in _COMMAND_EXTENSIONS:
+        _extend_command(name, value)

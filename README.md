@@ -27,29 +27,37 @@ Trilab HT90 integration.
 ## Printer type
 
 Prusa Connect has no "generic" type, so konnect advertises as one of
-Prusa's own. konnect currently supports **HT90** — the only SDK PrinterType
-whose Connect dashboard exposes **all three** capabilities we need:
+Prusa's own. The onboarding UI exposes three options, with different
+trade-offs:
 
-- Legacy-protocol **file browser** (lists gcode from `~/printer_data/gcodes`
-  + accepts uploads from the Connect web UI)
-- **Set Ready / Cancel Ready** toggle that dispatches commands back to the
-  printer
-- **Chamber temperature** controls (active only if your Klipper config has
-  a `[heater_chamber]` section; otherwise the widgets stay idle)
+| Type | Telemetry | Set Ready | File list | Upload from Connect | Chamber controls |
+|---|---|---|---|---|---|
+| **`HT90`** (recommended) | ✓ | ✓ | ✓ legacy protocol | ✓ legacy `START_CONNECT_DOWNLOAD` | ✓ |
+| `MK4S` | ✓ | ✓ | ✓ Buddy-style | ✗ requires Buddy WebSocket | — |
+| `COREONE` | ✓ | ✓ | ✓ Buddy-style | ✗ requires Buddy WebSocket | ✓ |
 
-Connect's MK4 / MK4S / Core One dashboards render nicely but their file
-browser ignores the SDK's legacy `files` tree (they expect a Buddy-firmware
-file protocol we don't implement), so upload/list doesn't work there.
-Older types like I3MK3S have the inverse problem: file listing works but
-Set Ready button doesn't dispatch.
+Why the upload split: Connect uses `START_ENCRYPTED_DOWNLOAD` to push files
+to MK4/MK4S/Core One printers, and the `/f/<iv>/raw` URL that serves the
+ciphertext is only reachable while the printer is connected over Buddy's
+WebSocket channel (`/p/ws`). The SDK konnect is built on uses HTTPS
+long-polling, not WebSocket, so we can decrypt (AES-128-CTR) but can't
+actually fetch the ciphertext. **HT90 sidesteps this** — its dashboard
+uses `START_CONNECT_DOWNLOAD` / `START_URL_DOWNLOAD`, both of which work
+over plain HTTPS and are implemented in the SDK's `DownloadMgr`.
 
-HT90 gets you everything. Connect displays "Prusa Pro HT90" in its UI —
-that's just the dashboard styling, no implication about your hardware.
+If you pick MK4S/Core One for the modern dashboard, you can still upload
+gcode via Mainsail/Fluidd and it shows up in Connect's file list (konnect
+picks up the file via inotify and advertises it in the next
+`SEND_FILE_INFO` response). The inverse — older `I3MK3S` etc. — is worse:
+file listing works but Connect's UI doesn't dispatch `SET_PRINTER_READY`.
 
-The extension machinery for MK4S / Core One / MK4 / XL / etc.
-([konnect/printer_types.py](konnect/printer_types.py)) is retained
-but disabled by default. Re-enable by calling `install()` from
-`__main__.py` if Prusa publishes a spec for the Buddy file protocol.
+HT90 is the only type that gets you the whole workflow in Connect's UI.
+
+The machinery for the extra types lives in
+[konnect/printer_types.py](konnect/printer_types.py) (PrinterType enum
+extensions) and [konnect/modern_fs.py](konnect/modern_fs.py) (Buddy-style
+`storages` + per-path file info). If Prusa ever opens up the Buddy
+WebSocket protocol, we can add the upload path without touching the rest.
 
 > Change `printer_type` **before** first registration. Switching after
 > registering makes Connect see a different printer type under the same
@@ -58,16 +66,46 @@ but disabled by default. Re-enable by calling `install()` from
 
 ## Firmware version
 
-Connect displays a `Firmware` field for each printer. konnect defaults to
-`firmware_version = 1.3.19+6969` — an HT90-style version string (real HT90
-releases look like `1.3.19`; the suffix marks this as konnect). Override
-in `konnect.cfg`, or leave empty to report whatever Klippy's
-`machine.system_info` exposes as the OS distribution version.
+Connect displays a `Firmware` field for each printer. By default konnect
+picks a version string appropriate to your `printer_type`:
+
+| `printer_type` | Default firmware string |
+|---|---|
+| `HT90` | `1.3.19+6969` |
+| `MK4S` | `6.4.19+6969` |
+| `COREONE` | `6.4.19+6969` |
+
+The HT90 number matches real HT90 firmware release numbering; MK4S / Core
+One match Prusa's Buddy firmware scheme — high enough that Connect's
+modern-dashboard features unlock (upload button, etc.). The `+6969`
+suffix marks the string as konnect rather than an authentic firmware
+build.
+
+Override by setting `firmware_version` in `~/printer_data/config/konnect.cfg`.
+Leave it unset to use the defaults above.
 
 ## Install
 
 Tested on MainsailOS / FluiddPi on Raspberry Pi. Requires Python 3.9+.
 Run as the user that owns `~/printer_data` (not root).
+
+### Quick install (curl one-liner)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hanzov69/konnect/main/scripts/bootstrap.sh | bash
+```
+
+Passes flags through to `install.sh` via `bash -s --`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hanzov69/konnect/main/scripts/bootstrap.sh | \
+    bash -s -- --no-klipperscreen
+```
+
+Env overrides (pin a release, use a fork, relocate the checkout):
+`KONNECT_REF=0.2.0`, `KONNECT_REPO=…`, `KONNECT_DIR=…`.
+
+### Manual install (tarball)
 
 ```sh
 cd ~

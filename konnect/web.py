@@ -48,34 +48,71 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# The printer type konnect exposes. Only HT90 for now: the MK4-family
-# and Core One dashboards on Connect do render our telemetry, but their
-# file-browser widget ignores the legacy SDK `files` tree (Connect
-# treats those types as Buddy-firmware-native and expects a different
-# file protocol we don't implement). HT90 honors the legacy protocol,
-# so file listing + upload + Set Ready + chamber controls all work.
+# Printer types konnect exposes, in UI order. HT90 is first because
+# it's the only type that has the full workflow (file listing +
+# upload + Set Ready + chamber controls) end-to-end with konnect's
+# long-polling SDK. MK4S / COREONE render a more modern dashboard
+# but Connect's upload UI requires Buddy's WebSocket protocol, so
+# uploads from Connect don't work for those types.
 #
-# Any other PrinterType enum member is still settable via `printer_type`
-# in konnect.cfg — we just don't advertise them in the wizard.
-SUPPORTED_PRINTER_TYPES: tuple[str, ...] = ("HT90",)
+# Any other SDK PrinterType enum member is still settable via
+# `printer_type` in konnect.cfg — we just don't advertise them.
+SUPPORTED_PRINTER_TYPES: tuple[str, ...] = ("HT90", "MK4S", "COREONE")
+
+# The default selection in the onboarding wizard. HT90 is the
+# recommended pick.
+DEFAULT_PRINTER_TYPE: str = "HT90"
 
 # Hints shown in the onboarding UI for each type we expose.
+# `warnings` surfaces as a red-banner message next to the card.
 PRINTER_TYPE_HINTS: dict[str, dict[str, str]] = {
     "HT90": {
-        "label": "Prusa Pro HT90",
+        "label": "Prusa Pro HT90 (recommended)",
         "description": (
-            "Connect's HT90 dashboard provides everything konnect needs: "
-            "a legacy-protocol file browser (Connect can list and upload "
-            "gcode to your ~/printer_data/gcodes), Set Ready / Cancel "
-            "Ready controls that dispatch commands back to the printer, "
-            "and chamber temperature controls. konnect forwards "
-            "SET_VALUE chamber_target_temp commands to a Klipper "
-            "[heater_chamber] section if you have one; otherwise the "
-            "chamber widgets simply stay idle. Works for any generic "
-            "Klipper printer."
+            "Industrial dashboard with chamber temperature controls. "
+            "The ONLY type where everything works end-to-end with "
+            "konnect: file listing, uploads from Connect's UI, "
+            "Set Ready / Cancel Ready, and chamber temperature "
+            "controls. Picks up any Klipper printer — chamber widgets "
+            "stay idle if you don't have a [heater_chamber]."
+        ),
+        "recommended_for": "Default pick — works for any Klipper printer",
+        "warning": "",
+    },
+    "MK4S": {
+        "label": "Prusa MK4S (uploads don't work)",
+        "description": (
+            "Modern MK4S dashboard. File listing, telemetry, Set Ready, "
+            "and print start all work. If you want the newer UI and "
+            "can live without upload-from-Connect."
         ),
         "recommended_for": (
-            "Any Klipper printer — enclosed or not, chamber-heated or not"
+            "Users who prefer the modern look and upload via Mainsail/Fluidd"
+        ),
+        "warning": (
+            "⚠ Uploading files from Connect's UI does NOT work for MK4S — "
+            "the Buddy WebSocket protocol this dashboard uses is not "
+            "implementable over konnect's HTTPS-polling SDK. Upload via "
+            "Mainsail/Fluidd instead; files then appear in Connect's "
+            "file list. Pick HT90 if Connect-side uploads matter."
+        ),
+    },
+    "COREONE": {
+        "label": "Prusa Core One (uploads don't work)",
+        "description": (
+            "Core One dashboard including chamber temperature controls. "
+            "Same feature set as MK4S plus chamber — konnect forwards "
+            "SET_VALUE chamber_target_temp commands to your "
+            "[heater_chamber] if you have one."
+        ),
+        "recommended_for": (
+            "CoreXY with heated chamber if you tolerate upload-via-Mainsail"
+        ),
+        "warning": (
+            "⚠ Uploading files from Connect's UI does NOT work for Core One "
+            "(same WebSocket limitation as MK4S). Upload via Mainsail/Fluidd "
+            "instead. Pick HT90 if Connect-side uploads matter — HT90's "
+            "chamber controls work too."
         ),
     },
 }
@@ -318,10 +355,14 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
 
     @app.route("/printer-types", methods=["GET"])
     def get_printer_types():  # noqa: ANN202
-        """Return ONLY the curated types the UI offers (MK4S + Core One).
-        Power users can still set any other PrinterType enum member via
-        `printer_type = ...` in konnect.cfg — we just don't surface
-        legacy / unusual models in the default wizard."""
+        """Return the curated types the UI offers.
+
+        `current` is whatever `printer_type` is in konnect.cfg.
+        `default` is the wizard's recommended pre-selection (HT90).
+        Power users can still set any other PrinterType enum member
+        via `printer_type = ...` in konnect.cfg — we just don't
+        surface legacy / unusual models in the default wizard.
+        """
         types = []
         for name in SUPPORTED_PRINTER_TYPES:
             member = getattr(PrinterType, name, None)
@@ -334,9 +375,11 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
                 "label": hint["label"],
                 "description": hint["description"],
                 "recommended_for": hint["recommended_for"],
+                "warning": hint.get("warning", ""),
             })
         return jsonify({
             "current": printer.type.name if printer.type else None,
+            "default": DEFAULT_PRINTER_TYPE,
             "types": types,
         })
 
