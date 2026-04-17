@@ -123,7 +123,8 @@ Flags: `--keep-venv`, `--keep-config`, `--keep-db`, `--keep-backups`.
 
 [CC BY-NC 4.0](LICENSE.txt) (Creative Commons Attribution-NonCommercial 4.0
 International). You may share and adapt the material for **non-commercial
-purposes only**, with attribution. Commercial use requires separate
-permission from the author. Uses the open-source
+purposes only**, with attribution. Commercial use is strictly forbidden. Don't be jerks. 
+
+Uses the open-source/freeware codebase from
 [prusa.connect.sdk.printer](https://github.com/prusa3d/Prusa-Connect-SDK-Printer);
-architecture informed by Trilab's HT90 firmware.
+

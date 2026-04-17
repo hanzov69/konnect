@@ -29,9 +29,24 @@ DEFAULT_CONFIG_PATHS = [
 ]
 
 
+def _default_printer_type() -> PrinterType:
+    """Resolve the default type lazily.
+
+    konnect extends PrinterType with MK4S/COREONE at import time (see
+    konnect/printer_types.py). This function is called after that
+    extension runs, so MK4S is available. We fall back to I3MK3S only
+    if the extension hasn't run yet (shouldn't happen in practice).
+    """
+    return getattr(PrinterType, "MK4S", PrinterType.I3MK3S)
+
+
 @dataclass
 class Config:
-    printer_type: PrinterType = PrinterType.I3MK3S
+    printer_type: PrinterType = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.printer_type is None:
+            self.printer_type = _default_printer_type()
     moonraker_host: str = "127.0.0.1"
     moonraker_port: int = 7125
     web_host: str = "0.0.0.0"  # noqa: S104 - matches HT90 upstream; bound behind nginx
@@ -47,6 +62,13 @@ class Config:
     # / moonraker.log). Empty string disables the file handler — only
     # stdout/journald is used in that case.
     log_path: str = str(Path.home() / "printer_data" / "logs" / "konnect.log")
+    # Override the firmware version string reported to Prusa Connect.
+    # Empty = use Klippy's reported OS distro version. Default is
+    # "6.4.0+6969" which matches the Prusa Buddy firmware versioning
+    # scheme Connect expects for MK4S / Core One — keeping the default
+    # aligned with the default printer_type (MK4S) avoids surprising
+    # mismatches on Connect's Firmware field.
+    firmware_version: str = "6.4.0+6969"
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -91,6 +113,9 @@ class Config:
             "moonraker_timeout", self.moonraker_timeout,
         )
         self.log_path = _expand(section.get("log_path", self.log_path))
+        self.firmware_version = section.get(
+            "firmware_version", self.firmware_version,
+        ).strip()
 
 
 def _expand(path: str) -> str:

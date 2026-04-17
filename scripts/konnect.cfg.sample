@@ -7,28 +7,31 @@
 
 [konnect]
 
-# Which PrinterType the SDK advertises to Prusa Connect. Valid values:
-#   I3MK3S   — default; safe for any bed-slinger / CoreXY FDM without
-#              an actively heated chamber. Connect shows the standard
-#              i3-family UI. Use this for Voron Trident, RatRig V-core,
-#              Ender-class, VzBot, Prusa MK3-clones, etc. — essentially
-#              any Klipper printer that does NOT control chamber temp.
-#   HT90     — for printers with an ACTIVELY HEATED chamber controlled
-#              by Klipper (`[heater_chamber]` defined). Connect exposes
-#              chamber controls (target temp, graph) and konnect will
-#              forward Connect's chamber_target_temp commands to your
-#              [heater_chamber]. Pick this if your enclosure has a real
-#              heater and thermistor, not just passive insulation.
-#   I3MK3    — legacy MK3. Usually prefer I3MK3S.
-#   I3MK25   — legacy MK2.5. Usually prefer I3MK3S.
-#   I3MK25S  — legacy MK2.5S. Usually prefer I3MK3S.
-#   M1       — Prusa M1.
-#   SL1 / SL1S — MSLA resin. NOT RECOMMENDED for FDM Klipper.
+# Which PrinterType the SDK advertises to Prusa Connect.
 #
-# ⚠ Prusa Connect has no "generic" type, so konnect impersonates one of
-#   the above. Once you register, changing this requires unregistering
-#   first (DELETE /connection or the "Unregister" button).
-printer_type = I3MK3S
+# konnect offers TWO types by default (the onboarding UI picks between
+# them — these are the only two shown):
+#
+#   MK4S    — default; for FDM printers WITHOUT an actively heated
+#             chamber. Connect renders the MK4S dashboard. Safe for
+#             any Voron Trident (unheated), Ender-class, RatRig,
+#             VzBot, or any generic Klipper printer.
+#
+#   COREONE — for printers with an ACTIVELY heated chamber controlled
+#             by Klipper ([heater_chamber] with a target). Connect
+#             shows Core One dashboard including chamber temp
+#             controls; konnect forwards SET_VALUE chamber_target_temp
+#             commands to your [heater_chamber].
+#
+# Other SDK-known types (advanced, not surfaced in the UI):
+#   I3MK3 / I3MK3S / I3MK25 / I3MK25S / MK3_5 / MK3_5S / MK3_9 /
+#   MK3_9S / MK4 / HT90 / MINI / XL / IX / SL1 / SL1S / M1
+#
+# ⚠ Changing printer_type after registering makes Connect see a
+#   different printer under the same fingerprint. Unregister first
+#   (DELETE /connection or the "Unregister" button in the web UI),
+#   then change this line, restart konnect, and re-register.
+printer_type = MK4S
 
 # Moonraker JSON-RPC endpoint
 moonraker_host = 127.0.0.1
@@ -53,3 +56,10 @@ crowsnest_config = ${HOME}/printer_data/config/crowsnest.conf
 #   tail -f ~/printer_data/logs/konnect.log     # file
 #   journalctl -u konnect -f                    # journal
 log_path = ${HOME}/printer_data/logs/konnect.log
+
+# Firmware version string reported to Prusa Connect's "Firmware" field.
+# Default "6.4.0+6969" matches the Buddy firmware versioning scheme
+# that Connect expects for MK4S / Core One. Override if you want a
+# different string; leave empty to use Klippy's reported distro
+# version (less realistic from Connect's perspective).
+firmware_version = 6.4.0+6969

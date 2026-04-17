@@ -13,6 +13,19 @@ from threading import Event
 from prusa.connect.printer import __version__ as sdk_version
 from prusa.connect.printer import const
 
+# Extend the SDK's closed PrinterType enum with newer Prusa models
+# (MK4S, Core One, etc.) BEFORE anything imports printer / web /
+# config — importing the module installs the members.
+from . import printer_types  # noqa: F401
+
+# Optional HTTP-traffic spy (debug only). Gated on an env var so it
+# costs nothing in production; set KONNECT_HTTP_SPY=1 in the service
+# unit (via /etc/systemd/system/konnect.service.d/spy.conf) to enable.
+# Writes every Session.request() body + response headers to
+# /tmp/konnect_http.log — useful for diagnosing Connect-side issues.
+if os.environ.get("KONNECT_HTTP_SPY"):
+    from . import _http_spy  # noqa: F401
+
 from . import __version__
 from .config import Config
 from .printer import KonnectPrinter

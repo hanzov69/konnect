@@ -148,7 +148,14 @@ class KonnectPrinter(SDKPrinter):
                 continue
             machine_info = self.moonraker("machine.system_info")
 
-        self.firmware = nested_get(
+        # Prefer an operator-provided firmware string from konnect.cfg;
+        # fall back to whatever Moonraker/Klippy reports for OS distro
+        # version. Connect shows this verbatim in the printer info
+        # panel, so it's useful to override if you want to match a
+        # particular firmware naming scheme (e.g. "3.14.1-6969" to
+        # mirror Prusa's versioning for the printer type being
+        # advertised).
+        self.firmware = self.cfg.firmware_version or nested_get(
             machine_info, "system_info", "distribution", "version",
             default="klipper",
         )
@@ -202,11 +209,23 @@ class KonnectPrinter(SDKPrinter):
     def _on_registered(self, token: str | None) -> None:
         """Called by SDK when register()→poll loop resolves.
 
-        token=None means we're resetting. Either way, persist and
-        re-register the camera so it inherits the new token/owner.
+        token=None means we're resetting. On successful registration we
+        also push a fresh INFO event — Connect expects printer metadata
+        right after accepting the new token, and without it subsequent
+        telemetry POSTs get rejected (503 SERVICE_UNAVAILABLE) because
+        the server has the printer in an "unpopulated" state.
         """
         self.db.set("connect", "token", value=token or "")
-        if token and self.camera is not None and self.camera.camera_id:
+        if not token:
+            return
+        # Re-emit INFO so Connect has current metadata for this token.
+        try:
+            info = self.get_info()
+            info["source"] = Source.FIRMWARE
+            self.event_cb(**info)
+        except Exception:  # noqa: BLE001
+            log.exception("failed to send post-registration INFO")
+        if self.camera is not None and self.camera.camera_id:
             self.camera_controller.register_camera(self.camera.camera_id)
 
     def _current_server_url(self) -> str:

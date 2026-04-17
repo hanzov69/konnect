@@ -39,6 +39,12 @@ TELEMETRY_TIME_THRESHOLD = 300
 # Send an empty-but-timestamped telemetry ping every 5 seconds so Connect's
 # presence indicator stays green between diff-triggered bursts.
 MIN_TELEMETRY_AGE = 5
+# Defensive resync: query Moonraker's actual state every N seconds and
+# reconcile. Catches state-drift bugs where a notify_status_update is
+# dropped (moonraker WS reconnect, klippy restart, etc.) and we end up
+# reporting stale state to Connect (e.g. still PRINTING after a cancel
+# → Connect rejects telemetry with 503 until we re-sync).
+RESYNC_INTERVAL = 60
 
 # Moonraker print_stats.state → SDK State.
 MOON_2_CONNECT = {
@@ -78,7 +84,13 @@ class Actions:
             "notify_klippy_shutdown": self.set_error_state,
             "notify_klippy_disconnected": self.set_error_state,
             "notify_history_changed": self.history_job_changed,
+            # Synthetic event — triggered by the periodic timer below
+            # or by POST /resync. Re-queries current state from
+            # Moonraker (no re-subscribe) and feeds it through
+            # send_telemetry so any drift gets corrected.
+            "konnect_resync": self.resync,
         }
+        self._last_resync = 0.0
         self._thread = Thread(target=self.loop, name="konnect-actions", daemon=True)
 
     def start(self) -> None:
@@ -93,20 +105,37 @@ class Actions:
     def loop(self) -> None:
         self._stop = False
         while not self._stop:
+            # Process a queued event if available. Empty queue just
+            # falls through to the periodic-resync check below.
             try:
                 item = self.queue.get(timeout=self.QUEUE_TIMEOUT)
             except Empty:
-                continue
-            if item is None:  # sentinel used by stop path
-                break
-            try:
-                method, obj, params = item
-                if method in self._callbacks:
-                    self._callbacks[method](obj, params)
-                elif method and method != "notify_proc_stat_update":
-                    log.debug("moonraker %s: %s", method, params)
-            except Exception:  # noqa: BLE001
-                log.exception("actions dispatcher raised")
+                item = None
+            if item is not None:
+                try:
+                    method, obj, params = item
+                    if method in self._callbacks:
+                        self._callbacks[method](obj, params)
+                    elif method and method != "notify_proc_stat_update":
+                        log.debug("moonraker %s: %s", method, params)
+                except Exception:  # noqa: BLE001
+                    log.exception("actions dispatcher raised")
+
+            # Periodic defensive resync — runs whether or not the
+            # queue had items this tick. Only fires if the Moonraker
+            # WS is up; otherwise the query would just time out.
+            moonraker = getattr(self.printer, "moonraker", None)
+            now = time()
+            if (
+                moonraker is not None
+                and moonraker.connected
+                and now - self._last_resync > RESYNC_INTERVAL
+            ):
+                self._last_resync = now
+                try:
+                    self.resync(moonraker, {})
+                except Exception:  # noqa: BLE001
+                    log.exception("periodic resync failed")
 
     # ---- subscribe & telemetry -----------------------------------------
 
@@ -150,6 +179,35 @@ class Actions:
             history = moonraker("server.history.list", {"limit": 1}, timeout=2.0)
             if history and (jobs := history.get("jobs", [])):
                 self.history_job_changed(moonraker, {"action": "added", "job": jobs[0]})
+
+    def resync(self, moonraker, _params) -> None:
+        """Query Moonraker's current state and reconcile.
+
+        Unlike subscribe(), this doesn't re-subscribe — it uses a
+        one-shot `printer.objects.query` to get current values and
+        passes them through the normal telemetry pipeline. If the
+        printer's actual state differs from our cached state
+        (because we missed a notify_status_update), send_telemetry
+        will detect the mismatch and emit a state-change event to
+        Connect, healing the drift.
+        """
+        result = moonraker(
+            "printer.objects.query",
+            {"objects": self.subscribe_objects},
+            timeout=2.0,
+        )
+        if not result:
+            return
+        status = result.get("status", {})
+        if not status:
+            return
+        prev_state = self.printer.state
+        self.send_telemetry(moonraker, status)
+        if prev_state != self.printer.state:
+            log.info(
+                "resync reconciled state: %s → %s",
+                prev_state.value, self.printer.state.value,
+            )
 
     def process_telemetry(self, params: dict) -> Telemetry:
         new = Telemetry()

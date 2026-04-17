@@ -48,62 +48,36 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# Hints shown in the onboarding UI next to each PrinterType. Keep these
-# here (not in the SDK) so we can update wording without forking the SDK.
+# The two printer types konnect exposes to users. Every other SDK
+# PrinterType member is still accessible via konnect.cfg if someone
+# really wants it, but the UI intentionally narrows the choice to
+# these two — they cover the "generic Klipper bed-slinger" and
+# "Klipper with heated chamber" cases cleanly and are current-gen
+# enough that Connect's UI treats them as first-class.
+SUPPORTED_PRINTER_TYPES: tuple[str, ...] = ("MK4S", "COREONE")
+
+# Hints shown in the onboarding UI for each type we expose.
 PRINTER_TYPE_HINTS: dict[str, dict[str, str]] = {
-    "I3MK3S": {
-        "label": "i3 MK3S (recommended default)",
+    "MK4S": {
+        "label": "Prusa MK4S (standard FDM, no heated chamber)",
         "description": (
             "Use for any bed-slinger or CoreXY printer WITHOUT an actively "
-            "heated enclosure. Connect renders the standard i3-family UI. "
-            "Safe choice for Voron, RatRig, Ender-class, VzBot, etc."
+            "heated enclosure. Connect shows the MK4S dashboard. Safe for "
+            "Voron Trident (unheated), Ender-class, RatRig, VzBot, and any "
+            "generic Klipper printer that does not control a chamber heater."
         ),
-        "recommended_for": "Any generic Klipper printer without chamber heating",
+        "recommended_for": "Any generic Klipper printer without active chamber heating",
     },
-    "HT90": {
-        "label": "Prusa Pro HT90 (for heated-chamber printers)",
+    "COREONE": {
+        "label": "Prusa Core One (CoreXY with heated chamber)",
         "description": (
-            "Use if your printer has an actively heated chamber (target "
-            "temp can be set, not just insulated). Connect exposes "
-            "industrial-class UI including chamber temperature controls, "
-            "and konnect will forward SET_VALUE chamber_target_temp "
-            "commands to a Klipper [heater_chamber] config."
+            "Use if your printer has an ACTIVELY heated chamber controlled "
+            "by Klipper ([heater_chamber] with a target). Connect shows the "
+            "Core One dashboard including chamber temperature controls, and "
+            "konnect forwards SET_VALUE chamber_target_temp commands to "
+            "your [heater_chamber]."
         ),
-        "recommended_for": "Voron 2.4 / 3D-Chameleon with active chamber heater, industrial enclosed printers",
-    },
-    "I3MK3": {
-        "label": "i3 MK3 (older MK3 revision)",
-        "description": "Same UI as MK3S, one firmware generation older.",
-        "recommended_for": "Rarely the best pick — prefer I3MK3S.",
-    },
-    "I3MK25": {
-        "label": "i3 MK2.5",
-        "description": "Legacy i3 MK2.5 profile.",
-        "recommended_for": "Rarely the best pick — prefer I3MK3S.",
-    },
-    "I3MK25S": {
-        "label": "i3 MK2.5S",
-        "description": "Legacy i3 MK2.5S profile.",
-        "recommended_for": "Rarely the best pick — prefer I3MK3S.",
-    },
-    "SL1": {
-        "label": "SL1 (resin / MSLA)",
-        "description": (
-            "Only pick if you really have an MSLA-style resin printer — "
-            "Connect expects resin-specific telemetry konnect does not "
-            "emit. Not recommended for FDM Klipper."
-        ),
-        "recommended_for": "NOT recommended for FDM",
-    },
-    "SL1S": {
-        "label": "SL1S (resin / MSLA)",
-        "description": "Same caveat as SL1.",
-        "recommended_for": "NOT recommended for FDM",
-    },
-    "M1": {
-        "label": "M1",
-        "description": "Prusa M1 profile.",
-        "recommended_for": "Rarely the best pick — prefer I3MK3S or HT90.",
+        "recommended_for": "Voron 2.4 with chamber heater, enclosed industrial-class CoreXY printers",
     },
 }
 
@@ -258,6 +232,17 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
     def get_status():  # noqa: ANN202
         return jsonify({"state": printer.state.value})
 
+    @app.route("/resync", methods=["POST"])
+    def post_resync():  # noqa: ANN202
+        """Force a state reconciliation without waiting for the next
+        periodic resync. Useful if Connect's UI gets out of sync with
+        the printer (rare — usually the 60s periodic resync catches
+        missed notifications, but gives the user an instant escape
+        hatch)."""
+        prev = printer.state.value
+        printer.actions.queue.put(("konnect_resync", printer.moonraker, {}))
+        return jsonify({"ok": True, "previous_state": prev})
+
     @app.route("/set_printer_ready/<ready>", methods=["POST"])
     def set_printer_ready(ready: str):  # noqa: ANN202
         if ready.lower() in ("true", "1", "y", "yes"):
@@ -303,15 +288,22 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
 
     @app.route("/printer-types", methods=["GET"])
     def get_printer_types():  # noqa: ANN202
+        """Return ONLY the curated types the UI offers (MK4S + Core One).
+        Power users can still set any other PrinterType enum member via
+        `printer_type = ...` in konnect.cfg — we just don't surface
+        legacy / unusual models in the default wizard."""
         types = []
-        for member in PrinterType:
-            hint = PRINTER_TYPE_HINTS.get(member.name, {})
+        for name in SUPPORTED_PRINTER_TYPES:
+            member = getattr(PrinterType, name, None)
+            if member is None:  # unknown SDK version, skip
+                continue
+            hint = PRINTER_TYPE_HINTS[name]
             types.append({
                 "name": member.name,
                 "value": list(member.value),
-                "label": hint.get("label", member.name),
-                "description": hint.get("description", ""),
-                "recommended_for": hint.get("recommended_for", ""),
+                "label": hint["label"],
+                "description": hint["description"],
+                "recommended_for": hint["recommended_for"],
             })
         return jsonify({
             "current": printer.type.name if printer.type else None,
