@@ -103,14 +103,14 @@ curl -fsSL https://raw.githubusercontent.com/hanzov69/konnect/main/scripts/boots
 ```
 
 Env overrides (pin a release, use a fork, relocate the checkout):
-`KONNECT_REF=0.2.0`, `KONNECT_REPO=…`, `KONNECT_DIR=…`.
+`KONNECT_REF=0.2.1`, `KONNECT_REPO=…`, `KONNECT_DIR=…`.
 
 ### Manual install (tarball)
 
 ```sh
 cd ~
-tar -xzf konnect-0.2.0.tar.gz
-mv konnect-0.2.0 konnect    # or however the tarball unpacks
+tar -xzf konnect-0.2.1.tar.gz
+mv konnect-0.2.1 konnect    # or however the tarball unpacks
 ./konnect/scripts/install.sh
 ```
 

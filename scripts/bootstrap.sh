@@ -18,7 +18,7 @@
 #
 # Example:
 #
-#   curl -fsSL .../bootstrap.sh | KONNECT_REF=0.2.0 bash
+#   curl -fsSL .../bootstrap.sh | KONNECT_REF=0.2.1 bash
 set -Eeuo pipefail
 
 REPO="${KONNECT_REPO:-https://github.com/hanzov69/konnect.git}"
