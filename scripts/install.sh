@@ -568,9 +568,11 @@ EOF
       # is rare enough that silently doing-something-different is worse
       # than failing loudly so a human can diagnose.
       py_stderr=$(mktemp)
-      # `if !` around the python call so `set -e` doesn't fire before
-      # we've had a chance to surface the parser's stderr diagnostic.
-      if ! python3 - "$tmp_in" "$tmp_out" "$MARK_BEGIN" "$MARK_END" "$NGINX_CONTENT" 2>"$py_stderr" <<'PY'
+      # Wrap the python call in `if cmd; then success; else error`
+      # so `set -e` doesn't exit before we can surface the parser's
+      # stderr. Note the logic: run the python, branch on its exit
+      # code — success path is a no-op, failure path prints diagnostics.
+      if python3 - "$tmp_in" "$tmp_out" "$MARK_BEGIN" "$MARK_END" "$NGINX_CONTENT" 2>"$py_stderr" <<'PY'
 import sys
 
 src, dst, begin, end, location_block = sys.argv[1:6]
