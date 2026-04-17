@@ -48,36 +48,35 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# The two printer types konnect exposes to users. Every other SDK
-# PrinterType member is still accessible via konnect.cfg if someone
-# really wants it, but the UI intentionally narrows the choice to
-# these two — they cover the "generic Klipper bed-slinger" and
-# "Klipper with heated chamber" cases cleanly and are current-gen
-# enough that Connect's UI treats them as first-class.
-SUPPORTED_PRINTER_TYPES: tuple[str, ...] = ("MK4S", "COREONE")
+# The printer type konnect exposes. Only HT90 for now: the MK4-family
+# and Core One dashboards on Connect do render our telemetry, but their
+# file-browser widget ignores the legacy SDK `files` tree (Connect
+# treats those types as Buddy-firmware-native and expects a different
+# file protocol we don't implement). HT90 honors the legacy protocol,
+# so file listing + upload + Set Ready + chamber controls all work.
+#
+# Any other PrinterType enum member is still settable via `printer_type`
+# in konnect.cfg — we just don't advertise them in the wizard.
+SUPPORTED_PRINTER_TYPES: tuple[str, ...] = ("HT90",)
 
 # Hints shown in the onboarding UI for each type we expose.
 PRINTER_TYPE_HINTS: dict[str, dict[str, str]] = {
-    "MK4S": {
-        "label": "Prusa MK4S (standard FDM, no heated chamber)",
+    "HT90": {
+        "label": "Prusa Pro HT90",
         "description": (
-            "Use for any bed-slinger or CoreXY printer WITHOUT an actively "
-            "heated enclosure. Connect shows the MK4S dashboard. Safe for "
-            "Voron Trident (unheated), Ender-class, RatRig, VzBot, and any "
-            "generic Klipper printer that does not control a chamber heater."
+            "Connect's HT90 dashboard provides everything konnect needs: "
+            "a legacy-protocol file browser (Connect can list and upload "
+            "gcode to your ~/printer_data/gcodes), Set Ready / Cancel "
+            "Ready controls that dispatch commands back to the printer, "
+            "and chamber temperature controls. konnect forwards "
+            "SET_VALUE chamber_target_temp commands to a Klipper "
+            "[heater_chamber] section if you have one; otherwise the "
+            "chamber widgets simply stay idle. Works for any generic "
+            "Klipper printer."
         ),
-        "recommended_for": "Any generic Klipper printer without active chamber heating",
-    },
-    "COREONE": {
-        "label": "Prusa Core One (CoreXY with heated chamber)",
-        "description": (
-            "Use if your printer has an ACTIVELY heated chamber controlled "
-            "by Klipper ([heater_chamber] with a target). Connect shows the "
-            "Core One dashboard including chamber temperature controls, and "
-            "konnect forwards SET_VALUE chamber_target_temp commands to "
-            "your [heater_chamber]."
+        "recommended_for": (
+            "Any Klipper printer — enclosed or not, chamber-heated or not"
         ),
-        "recommended_for": "Voron 2.4 with chamber heater, enclosed industrial-class CoreXY printers",
     },
 }
 
@@ -231,6 +230,37 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
     @app.route("/status", methods=["GET"])
     def get_status():  # noqa: ANN202
         return jsonify({"state": printer.state.value})
+
+    @app.route("/debug/info", methods=["GET"])
+    def get_debug_info():  # noqa: ANN202
+        """Return the current INFO payload (what Connect would see).
+        Useful for verifying the file tree the SDK is advertising."""
+        try:
+            info = printer.get_info()
+            # Value-types are mostly JSON-safe except Source/Event/State
+            return jsonify({
+                k: (v.value if hasattr(v, "value") else v)
+                for k, v in info.items()
+            })
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"error": str(exc)}), 500
+
+    @app.route("/debug/info/resend", methods=["POST"])
+    def post_resend_info():  # noqa: ANN202
+        """Force a fresh INFO event to Connect. Useful if Connect's
+        cached view of the printer (files list, metadata) has drifted."""
+        from prusa.connect.printer.const import Source
+        info = printer.get_info()
+        info["source"] = Source.FIRMWARE
+        printer.event_cb(**info)
+        return jsonify({"ok": True, "file_count": _count_files(info.get("files"))})
+
+    def _count_files(node):
+        if not isinstance(node, dict):
+            return 0
+        if node.get("type") == "FILE":
+            return 1
+        return sum(_count_files(c) for c in (node.get("children") or []))
 
     @app.route("/resync", methods=["POST"])
     def post_resync():  # noqa: ANN202

@@ -254,6 +254,10 @@
       // If already registered, jump straight to dashboard.
       if (c.registration === "FINISHED" && c.token) {
         gotoDashboard();
+      } else if (pt.types.length <= 1) {
+        // Single supported type — skip the picker entirely.
+        state.selectedType = pt.current;
+        gotoIdentity();
       } else {
         gotoTypePicker();
       }
@@ -274,7 +278,13 @@
     }
     gotoIdentity();
   });
-  $("#identity-back").addEventListener("click", gotoTypePicker);
+  $("#identity-back").addEventListener("click", () => {
+    // If there's only one supported type the picker was skipped —
+    // bounce back to the picker anyway (it just shows the single type
+    // informationally), which is less confusing than disabling the
+    // button.
+    gotoTypePicker();
+  });
   $("#identity-next").addEventListener("click", async () => {
     try {
       await api("POST", "/printer", {

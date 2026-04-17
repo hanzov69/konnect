@@ -9,29 +9,26 @@
 
 # Which PrinterType the SDK advertises to Prusa Connect.
 #
-# konnect offers TWO types by default (the onboarding UI picks between
-# them — these are the only two shown):
+# HT90 is the only type konnect currently supports end-to-end —
+# Connect's HT90 dashboard renders the legacy-protocol file browser
+# (so uploads and listing work), honors the Set Ready / Cancel Ready
+# commands, and shows chamber temperature controls. MK4-family and
+# Core One dashboards look slick but their file-browser widgets
+# ignore the SDK's legacy `files` tree, so listing + upload from
+# Connect doesn't work for those types.
 #
-#   MK4S    — default; for FDM printers WITHOUT an actively heated
-#             chamber. Connect renders the MK4S dashboard. Safe for
-#             any Voron Trident (unheated), Ender-class, RatRig,
-#             VzBot, or any generic Klipper printer.
-#
-#   COREONE — for printers with an ACTIVELY heated chamber controlled
-#             by Klipper ([heater_chamber] with a target). Connect
-#             shows Core One dashboard including chamber temp
-#             controls; konnect forwards SET_VALUE chamber_target_temp
-#             commands to your [heater_chamber].
-#
-# Other SDK-known types (advanced, not surfaced in the UI):
-#   I3MK3 / I3MK3S / I3MK25 / I3MK25S / MK3_5 / MK3_5S / MK3_9 /
-#   MK3_9S / MK4 / HT90 / MINI / XL / IX / SL1 / SL1S / M1
+# Other SDK PrinterType members CAN be set here but the onboarding
+# UI and this doc treat them as advanced / unsupported:
+#   I3MK3 / I3MK3S / I3MK25 / I3MK25S / M1 / SL1 / SL1S
+# MK4, MK4S, COREONE, XL, MINI, etc. can be enabled by calling
+# konnect.printer_types.install() from __main__.py.
 #
 # ⚠ Changing printer_type after registering makes Connect see a
 #   different printer under the same fingerprint. Unregister first
-#   (DELETE /connection or the "Unregister" button in the web UI),
-#   then change this line, restart konnect, and re-register.
-printer_type = MK4S
+#   (Unregister button in the web UI, or
+#   `curl -X DELETE http://127.0.0.1:7130/connection`), then change
+#   this line, restart konnect, and re-register.
+printer_type = HT90
 
 # Moonraker JSON-RPC endpoint
 moonraker_host = 127.0.0.1
@@ -58,8 +55,8 @@ crowsnest_config = ${HOME}/printer_data/config/crowsnest.conf
 log_path = ${HOME}/printer_data/logs/konnect.log
 
 # Firmware version string reported to Prusa Connect's "Firmware" field.
-# Default "6.4.0+6969" matches the Buddy firmware versioning scheme
-# that Connect expects for MK4S / Core One. Override if you want a
-# different string; leave empty to use Klippy's reported distro
-# version (less realistic from Connect's perspective).
-firmware_version = 6.4.0+6969
+# Default "1.3.19+6969" matches the HT90 firmware numbering convention
+# (the suffix distinguishes konnect from a real HT90 build). Override
+# if you want a different string; leave empty to use Klippy's reported
+# distro version (less realistic from Connect's perspective).
+firmware_version = 1.3.19+6969

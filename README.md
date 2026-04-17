@@ -24,34 +24,32 @@ Trilab HT90 integration.
 - Self-healing: periodic state reconciliation catches missed Moonraker
   notifications; `/resync` endpoint for on-demand recovery without a restart
 
-## Pick a printer type
+## Printer type
 
-Prusa Connect has no "generic" type, so konnect advertises as one of Prusa's
-own. The choice affects which UI Connect shows; it does **not** require
-Prusa hardware or constrain what gcode you can print. Edit
-`~/printer_data/config/konnect.cfg` to change.
+Prusa Connect has no "generic" type, so konnect advertises as one of
+Prusa's own. konnect currently supports **HT90** — the only SDK PrinterType
+whose Connect dashboard exposes **all three** capabilities we need:
 
-konnect ships with the two printer types that actually matter:
+- Legacy-protocol **file browser** (lists gcode from `~/printer_data/gcodes`
+  + accepts uploads from the Connect web UI)
+- **Set Ready / Cancel Ready** toggle that dispatches commands back to the
+  printer
+- **Chamber temperature** controls (active only if your Klipper config has
+  a `[heater_chamber]` section; otherwise the widgets stay idle)
 
-| `printer_type =` | When to pick | What Connect shows |
-|---|---|---|
-| **`MK4S`** (default) | FDM printer **without** an actively heated chamber. Voron Trident (unheated), Ender-class, RatRig, VzBot, CoreXY without chamber heat, or any generic Klipper printer. | MK4S dashboard |
-| **`COREONE`** | FDM printer **with** an actively heated chamber controlled by Klipper (`[heater_chamber]` defined with a target). Voron 2.4 with chamber heater, enclosed industrial-class CoreXY. | Core One dashboard **with chamber temperature controls**; konnect forwards `SET_VALUE chamber_target_temp` commands to your `[heater_chamber]` |
+Connect's MK4 / MK4S / Core One dashboards render nicely but their file
+browser ignores the SDK's legacy `files` tree (they expect a Buddy-firmware
+file protocol we don't implement), so upload/list doesn't work there.
+Older types like I3MK3S have the inverse problem: file listing works but
+Set Ready button doesn't dispatch.
 
-Why `MK4S` specifically: Prusa Connect's **Set Ready** / **Cancel Ready** UI
-buttons are wired for modern Buddy-platform types (MK4-family, Core One,
-etc.) and only those types get `SET_PRINTER_READY` commands pushed back to
-the printer. Older types like `I3MK3S` display the button but don't dispatch
-the command.
+HT90 gets you everything. Connect displays "Prusa Pro HT90" in its UI —
+that's just the dashboard styling, no implication about your hardware.
 
-Both MK4S and Core One are injected into the SDK's closed `PrinterType`
-enum at startup (see [konnect/printer_types.py](konnect/printer_types.py));
-the tuples come directly from Prusa's Buddy firmware source.
-
-Power-user note: other enum members — `I3MK3S`, `HT90`, `MK4`, `MINI`, `XL`,
-`IX`, `MK3_5{,S}`, `MK3_9{,S}`, `SL1{,S}`, `M1` — are still accessible via
-`printer_type = <NAME>` in `konnect.cfg`, but the onboarding UI only
-surfaces MK4S and Core One.
+The extension machinery for MK4S / Core One / MK4 / XL / etc.
+([konnect/printer_types.py](konnect/printer_types.py)) is retained
+but disabled by default. Re-enable by calling `install()` from
+`__main__.py` if Prusa publishes a spec for the Buddy file protocol.
 
 > Change `printer_type` **before** first registration. Switching after
 > registering makes Connect see a different printer type under the same
@@ -61,9 +59,9 @@ surfaces MK4S and Core One.
 ## Firmware version
 
 Connect displays a `Firmware` field for each printer. konnect defaults to
-`firmware_version = 6.4.0+6969` — a plausible Buddy-firmware-style string
-that matches the MK4S/Core One naming convention. Override in
-`konnect.cfg`, or leave empty to report whatever Klippy's
+`firmware_version = 1.3.19+6969` — an HT90-style version string (real HT90
+releases look like `1.3.19`; the suffix marks this as konnect). Override
+in `konnect.cfg`, or leave empty to report whatever Klippy's
 `machine.system_info` exposes as the OS distribution version.
 
 ## Install
@@ -146,14 +144,14 @@ Common issues:
   immediately.
 - **No webcam detected** — `crowsnest.conf` needs a `[cam <name>]` section
   with a `port`. You can also enter a custom snapshot URL in the UI.
-- **Chamber controls missing in Connect** — you're registered as `MK4S`.
-  Set `printer_type = COREONE` in `konnect.cfg`, Unregister, restart
-  konnect, re-register.
+- **Chamber controls do nothing** — you need `[heater_chamber]` in your
+  Klipper config with a `min_temp` / `max_temp` / target temperature for
+  Connect's chamber widget to have anything to drive.
 - **KlipperScreen panel not showing** — restart KlipperScreen:
   `sudo systemctl restart KlipperScreen`.
-- **Ready toggle in Connect doesn't update the printer** — only MK4S /
-  Core One types get `SET_PRINTER_READY` commands dispatched. Older types
-  (I3MK3S, etc.) don't, even though Connect's UI shows the button.
+- **Files not listed / uploads fail** — confirm `printer_type = HT90` in
+  `konnect.cfg`. MK4-family and Core One dashboards on Connect don't
+  honor the legacy file protocol konnect uses.
 - **HTTP debug** — set `Environment=KONNECT_HTTP_SPY=1` in a
   `/etc/systemd/system/konnect.service.d/*.conf` override and restart to
   log every Connect request/response to `/tmp/konnect_http.log`.

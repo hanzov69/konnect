@@ -29,24 +29,12 @@ DEFAULT_CONFIG_PATHS = [
 ]
 
 
-def _default_printer_type() -> PrinterType:
-    """Resolve the default type lazily.
-
-    konnect extends PrinterType with MK4S/COREONE at import time (see
-    konnect/printer_types.py). This function is called after that
-    extension runs, so MK4S is available. We fall back to I3MK3S only
-    if the extension hasn't run yet (shouldn't happen in practice).
-    """
-    return getattr(PrinterType, "MK4S", PrinterType.I3MK3S)
-
-
 @dataclass
 class Config:
-    printer_type: PrinterType = None  # type: ignore[assignment]
-
-    def __post_init__(self):
-        if self.printer_type is None:
-            self.printer_type = _default_printer_type()
+    # HT90 is the only officially-supported type in the UI right now
+    # (see konnect/web.py SUPPORTED_PRINTER_TYPES for rationale).
+    # The stock SDK already ships with HT90 — no enum extension needed.
+    printer_type: PrinterType = PrinterType.HT90
     moonraker_host: str = "127.0.0.1"
     moonraker_port: int = 7125
     web_host: str = "0.0.0.0"  # noqa: S104 - matches HT90 upstream; bound behind nginx
@@ -64,11 +52,11 @@ class Config:
     log_path: str = str(Path.home() / "printer_data" / "logs" / "konnect.log")
     # Override the firmware version string reported to Prusa Connect.
     # Empty = use Klippy's reported OS distro version. Default is
-    # "6.4.0+6969" which matches the Prusa Buddy firmware versioning
-    # scheme Connect expects for MK4S / Core One — keeping the default
-    # aligned with the default printer_type (MK4S) avoids surprising
-    # mismatches on Connect's Firmware field.
-    firmware_version: str = "6.4.0+6969"
+    # "1.3.19+6969" which matches the HT90 firmware numbering
+    # convention (real HT90 firmware releases look like "1.3.19") with
+    # a distinguishing suffix so Connect's Firmware field shows a
+    # plausible HT90-style string.
+    firmware_version: str = "1.3.19+6969"
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
