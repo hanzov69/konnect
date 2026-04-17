@@ -123,8 +123,11 @@ sed_remove_block_for_ts() {
     # Generic cleanup: remove ALL konnect blocks (legacy format).
     run "sudo sed -i '/# >>> konnect begin/,/# <<< konnect end >>>/d' '$path'"
   fi
-  # Trim trailing blank lines our block left behind.
-  run "sudo sed -i -e :a -e '/^\\s*$/N;/\\n\\s*$/ba' -e '\$d' '$path'" 2>/dev/null || true
+  # Trim trailing blank lines the removed block left behind. The
+  # `{...}` grouping scopes `$d` to blank lines only — without it
+  # `$d` would delete the file's last line unconditionally, eating
+  # the server block's closing `}`.
+  run "sudo sed -i -e :a -e '/^[[:space:]]*\$/{\$d;N;ba' -e '}' '$path'" 2>/dev/null || true
 }
 
 restore_from_backup() {
