@@ -1,0 +1,55 @@
+# konnect.cfg — static configuration for the Prusa Connect bridge.
+# Copy to ~/printer_data/config/konnect.cfg and edit as needed.
+#
+# Dynamic values (serial number, tokens, selected camera) live in
+# moonrakerdb under the "konnect" namespace — they're edited from the
+# web UI or KlipperScreen panel, not here.
+
+[konnect]
+
+# Which PrinterType the SDK advertises to Prusa Connect. Valid values:
+#   I3MK3S   — default; safe for any bed-slinger / CoreXY FDM without
+#              an actively heated chamber. Connect shows the standard
+#              i3-family UI. Use this for Voron Trident, RatRig V-core,
+#              Ender-class, VzBot, Prusa MK3-clones, etc. — essentially
+#              any Klipper printer that does NOT control chamber temp.
+#   HT90     — for printers with an ACTIVELY HEATED chamber controlled
+#              by Klipper (`[heater_chamber]` defined). Connect exposes
+#              chamber controls (target temp, graph) and konnect will
+#              forward Connect's chamber_target_temp commands to your
+#              [heater_chamber]. Pick this if your enclosure has a real
+#              heater and thermistor, not just passive insulation.
+#   I3MK3    — legacy MK3. Usually prefer I3MK3S.
+#   I3MK25   — legacy MK2.5. Usually prefer I3MK3S.
+#   I3MK25S  — legacy MK2.5S. Usually prefer I3MK3S.
+#   M1       — Prusa M1.
+#   SL1 / SL1S — MSLA resin. NOT RECOMMENDED for FDM Klipper.
+#
+# ⚠ Prusa Connect has no "generic" type, so konnect impersonates one of
+#   the above. Once you register, changing this requires unregistering
+#   first (DELETE /connection or the "Unregister" button).
+printer_type = I3MK3S
+
+# Moonraker JSON-RPC endpoint
+moonraker_host = 127.0.0.1
+moonraker_port = 7125
+moonraker_timeout = 2.0
+
+# Flask web server — bound to loopback when behind nginx, 0.0.0.0 if
+# you want KlipperScreen on a separate host to talk directly.
+web_host = 0.0.0.0
+web_port = 7130
+
+# Local gcode directory exposed as the "/local" filesystem to Connect.
+local_gcode_path = ${HOME}/printer_data/gcodes
+local_fs_name = local
+
+# Crowsnest config for webcam auto-discovery.
+crowsnest_config = ${HOME}/printer_data/config/crowsnest.conf
+
+# Rotating log file (alongside klipper.log / moonraker.log). Set to
+# empty to disable the file handler; stdout (journald via systemd)
+# always captures output regardless.
+#   tail -f ~/printer_data/logs/konnect.log     # file
+#   journalctl -u konnect -f                    # journal
+log_path = ${HOME}/printer_data/logs/konnect.log

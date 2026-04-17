@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>konnect — Prusa Connect for Klipper</title>
+<link rel="stylesheet" href="konnect.css">
+</head>
+<body>
+<header>
+  <h1>konnect</h1>
+  <p class="tag">Prusa Connect for Klipper / Moonraker</p>
+</header>
+
+<main id="app">
+  <section id="loading" class="step">
+    <p>Loading…</p>
+  </section>
+
+  <!-- Step 1: printer type -->
+  <section id="step-type" class="step" hidden>
+    <h2>1. Choose your printer type</h2>
+    <p class="help">
+      Prusa Connect's SDK does not expose a "generic Klipper" type — every
+      printer must advertise as one of Prusa's own. This choice affects
+      which UI Connect shows you, but does <em>not</em> require real Prusa
+      hardware. You can safely pick the profile that most closely matches
+      your printer.
+    </p>
+    <div id="type-list" class="type-list"></div>
+    <button id="type-next" class="primary" disabled>Continue</button>
+  </section>
+
+  <!-- Step 2: identity -->
+  <section id="step-identity" class="step" hidden>
+    <h2>2. Printer identity</h2>
+    <p class="help">
+      Serial number is how Connect recognizes this printer across reboots.
+      A default is generated from your hardware; feel free to override.
+      <strong>Once you register in step 4, this cannot be changed</strong>
+      without unregistering first.
+    </p>
+    <label>Serial number
+      <input id="sn" type="text" maxlength="64">
+    </label>
+    <label>Name (optional)
+      <input id="name" type="text" maxlength="64">
+    </label>
+    <label>Location (optional)
+      <input id="location" type="text" maxlength="64">
+    </label>
+    <div class="row">
+      <button id="identity-back" class="secondary">Back</button>
+      <button id="identity-next" class="primary">Continue</button>
+    </div>
+  </section>
+
+  <!-- Step 3: register -->
+  <section id="step-register" class="step" hidden>
+    <h2>3. Register with Prusa Connect</h2>
+    <p class="help" id="register-help">
+      Click <strong>Get code</strong>. A one-time code will appear. Visit
+      <a id="connect-link" href="https://connect.prusa3d.com/add" target="_blank" rel="noreferrer">connect.prusa3d.com/add</a>
+      (or scan the QR), sign in, and paste the code. This page will update
+      automatically once registration finishes.
+    </p>
+    <button id="register-go" class="primary">Get code</button>
+    <div id="register-result" hidden>
+      <div class="code-box" id="code-box"></div>
+      <img id="qr" width="256" height="256" alt="Registration QR">
+      <p id="register-status" class="status">Waiting for Connect…</p>
+      <button id="register-cancel" class="secondary">Cancel / unregister</button>
+    </div>
+    <div class="row">
+      <button id="register-back" class="secondary">Back</button>
+    </div>
+  </section>
+
+  <!-- Step 4: camera -->
+  <section id="step-camera" class="step" hidden>
+    <h2>4. Webcam (optional)</h2>
+    <p class="help">
+      konnect can push snapshots from one Crowsnest stream up to Connect.
+      Detected streams are listed below. You can skip this and configure
+      it later from the status page.
+    </p>
+    <div id="camera-list"></div>
+    <label>Or a custom snapshot URL:
+      <input id="custom-url" type="url" placeholder="http://127.0.0.1:8080/?action=snapshot">
+    </label>
+    <div class="row">
+      <button id="camera-skip" class="secondary">Skip</button>
+      <button id="camera-next" class="primary">Use selected</button>
+    </div>
+  </section>
+
+  <!-- Step 5: dashboard -->
+  <section id="step-done" class="step" hidden>
+    <h2>Connected to Prusa Connect</h2>
+    <dl id="summary"></dl>
+    <div class="row">
+      <button id="refresh" class="secondary">Refresh</button>
+      <button id="unregister" class="danger">Unregister</button>
+    </div>
+  </section>
+
+  <div id="error" class="error" hidden></div>
+</main>
+
+<footer>
+  <a href="https://github.com/prusa3d/Prusa-Connect-SDK-Printer" target="_blank" rel="noreferrer">SDK</a>
+  · <a href="https://connect.prusa3d.com" target="_blank" rel="noreferrer">Prusa Connect</a>
+</footer>
+
+<script src="konnect.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+[Unit]
+Description=konnect — Prusa Connect bridge for Klipper/Moonraker
+Documentation=https://github.com/konnect-dev/konnect
+After=network-online.target moonraker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+# Run from the venv, NOT the user's home. If WorkingDirectory points
+# at $HOME, Python finds /home/<user>/konnect/ (the repo dir) as an
+# implicit namespace package via sys.path[0]=CWD, which shadows the
+# real package inside it and breaks relative imports at runtime.
+WorkingDirectory=/home/%i/konnect-env
+Environment=PYTHONUNBUFFERED=1
+# Use the pip-installed console script (see [project.scripts] in
+# pyproject.toml) — no `python -m konnect`, which is vulnerable to the
+# same sys.path shadowing.
+ExecStart=/home/%i/konnect-env/bin/konnect
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
