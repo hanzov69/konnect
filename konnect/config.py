@@ -38,15 +38,38 @@ _FIRMWARE_BY_TYPE: dict[str, str] = {
     "HT90":    "1.3.19+6969",   # real HT90 releases look like 1.3.19
     "MK4S":    "6.4.19+6969",   # Buddy firmware scheme
     "COREONE": "6.4.19+6969",   # Buddy firmware scheme
+    "MK4":     "6.4.19+6969",   # Buddy firmware scheme
+    "XL":      "6.4.19+6969",   # Buddy firmware scheme (toolchanger)
 }
 
 
 @dataclass
 class Config:
+    # Which server dialect to speak:
+    #   "cloud" — connect.prusa3d.com via the SDK's HTTPS long-polling
+    #   "pcl"   — a self-hosted Connect-compatible server via the
+    #             xBuddy WebSocket protocol (see konnect/pcl.py)
+    backend: str = "cloud"
+    # The custom server to register with (backend = pcl only). Required
+    # for PCL because the onboarding SPA posts the cloud's address;
+    # these override whatever the UI sends.
+    pcl_host: str = ""
+    pcl_port: int = 8080
+    pcl_tls: bool = False
+    # Whether server-sent raw G-code frames (type G/F) are forwarded to
+    # Klipper via Moonraker's printer.gcode.script. Your own server on
+    # your own LAN, so on by default; set false to refuse them.
+    remote_gcode: bool = True
+    # Debug: append every WebSocket frame (both directions, truncated)
+    # to /tmp/konnect_ws.log. The protocol-level analogue of
+    # KONNECT_HTTP_SPY.
+    ws_spy: bool = False
     # HT90 is the default — the only type that gets the full workflow
     # (file listing + upload + Set Ready + chamber controls) in
     # Connect's UI. MK4S / COREONE are also supported but have a
     # known upload limitation. See konnect/web.py.
+    # With backend = pcl the limitation disappears (uploads travel over
+    # the WebSocket), and MK4S / COREONE are the recommended types.
     printer_type: PrinterType = PrinterType.HT90
     moonraker_host: str = "127.0.0.1"
     moonraker_port: int = 7125
@@ -70,9 +93,10 @@ class Config:
     firmware_version: str = ""
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "Config":
+    def load(cls, path: Path | str | None = None) -> "Config":
         cfg = cls()
-        candidates = [path] if path else DEFAULT_CONFIG_PATHS
+        # argparse hands --config over as a str.
+        candidates = [Path(path)] if path else DEFAULT_CONFIG_PATHS
         for candidate in candidates:
             if candidate and candidate.is_file():
                 cfg._apply_file(candidate)
@@ -88,6 +112,27 @@ class Config:
         if "konnect" not in parser:
             return
         section = parser["konnect"]
+        backend = section.get("backend", self.backend).strip().lower()
+        if backend in ("cloud", "pcl"):
+            self.backend = backend
+        else:
+            log.error(
+                "Invalid backend=%r in %s. Valid: cloud, pcl. "
+                "Falling back to %s.", backend, path, self.backend,
+            )
+        self.pcl_host = section.get("pcl_host", self.pcl_host).strip()
+        self.pcl_port = section.getint("pcl_port", self.pcl_port)
+        self.pcl_tls = section.getboolean("pcl_tls", self.pcl_tls)
+        self.remote_gcode = section.getboolean(
+            "remote_gcode", self.remote_gcode,
+        )
+        self.ws_spy = section.getboolean("ws_spy", self.ws_spy)
+        if self.backend == "pcl" and not self.pcl_host:
+            log.warning(
+                "backend = pcl but pcl_host is not set — registration "
+                "will fail until pcl_host (and pcl_port / pcl_tls) are "
+                "added to %s.", path,
+            )
         if raw_type := section.get("printer_type"):
             try:
                 self.printer_type = PrinterType[raw_type.strip().upper()]

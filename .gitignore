@@ -9,3 +9,6 @@ dist/
 .DS_Store
 .claude/
 
+.venv-test/
+sdk-ref/
+__pycache__/

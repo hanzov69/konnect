@@ -126,7 +126,13 @@ class Moonraker:
         params: dict | None = None,
         timeout: float | None = None,
     ) -> dict | None:
-        """Blocking JSON-RPC call. Returns None on timeout/disconnect."""
+        """Blocking JSON-RPC call. Returns None on timeout/disconnect.
+
+        The lock covers only id allocation and the send — never the
+        wait. A long-running call (a printer.gcode.script that heats
+        and waits, say) must not stall every other caller: telemetry,
+        resyncs and db writes all come through here from other threads.
+        """
         if timeout is None:
             timeout = self.default_timeout
         with self._lock:
@@ -134,8 +140,9 @@ class Moonraker:
             if resp is None:
                 log.debug("moonraker call %s skipped — not connected", method)
                 return None
-            if not resp.ev.wait(timeout):
-                log.warning("moonraker call %s timed out after %.1fs", method, timeout)
-                self._responses.pop(self._req_id, None)
-                return None
-            return self._responses.pop(self._req_id).result
+            req_id = self._req_id
+        if not resp.ev.wait(timeout):
+            log.warning("moonraker call %s timed out after %.1fs", method, timeout)
+            self._responses.pop(req_id, None)
+            return None
+        return self._responses.pop(req_id).result

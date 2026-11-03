@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-PackageHomePage: https://github.com/hanzov69/konnect
+
+quick_actions:
+  upgrades:
+    items:
+      konnect-upgrade:
+        label: Upgrade Konnect
+        description: Download and install the latest pinned Konnect version.
+        if_cmd: /usr/local/bin/extended-pkg konnect needs_upgrade
+        confirm: "Upgrade konnect and restart the cloud service?"
+        cmd:
+          - bash
+          - -ec
+          - |
+            /usr/local/bin/extended-pkg konnect upgrade
+            /etc/init.d/S99cloud restart
+        message: "Upgrading konnect..."

@@ -81,13 +81,17 @@ class Telemetry:
     axis_x: float | None = None
     axis_y: float | None = None
     axis_z: float | None = None
+    # Buddy-style per-tool telemetry for a toolchanger (Prusa XL shape,
+    # also what a 4-head Snapmaker U1 reports): {"1": {"temp": …}, …,
+    # "active": n}. None on single-tool printers.
+    slot: dict | None = None
 
     TEMP_VALUES = ("temp_bed", "temp_nozzle", "temp_chamber")
     OTHER_VALUES = (
         "fan_extruder", "fan_print", "target_bed", "target_nozzle",
         "progress", "filament", "time_printing", "time_remaining",
         "material", "target_chamber", "fan_chamber", "axis_x", "axis_y",
-        "axis_z", "speed", "flow",
+        "axis_z", "speed", "flow", "slot",
     )
     CHAMBER_VALUES = ("temp_chamber", "target_chamber", "fan_chamber")
 

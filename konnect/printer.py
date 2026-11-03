@@ -7,6 +7,8 @@ still async so the main thread can `printer.start()` and return quickly.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from threading import Event as ThreadEvent
 from threading import Thread
 from time import sleep
 from typing import Any
@@ -76,8 +78,14 @@ class KonnectPrinter(SDKPrinter):
             kwargs={"timeout": 0.2},
             name="konnect-inotify",
         )
-        self.command_thread = InfinityThread(
-            target=self._command_tick, name="konnect-cmd",
+        # NOT an InfinityThread: that pattern sleeps 1s between target
+        # runs, which held every accepted command for up to ~1.2s before
+        # it executed. A server that sends commands back to back (a
+        # SEND_INFO immediately followed by a file listing) then hits
+        # "Another command is running" purely from scheduling latency.
+        self._cmd_stop = ThreadEvent()
+        self.command_thread = Thread(
+            target=self._command_loop, name="konnect-cmd", daemon=True,
         )
         self.download_thread = Thread(
             target=self.download_mgr.loop,
@@ -116,6 +124,21 @@ class KonnectPrinter(SDKPrinter):
             self._h_start_encrypted_download,
         )
 
+        # Custom-server backend: swap the SDK's HTTPS long-polling
+        # for the xBuddy WebSocket session, and register the handlers
+        # that only make sense there (inline upload actually works,
+        # SET_TOKEN rotation, raw G-code frames).
+        self.pcl = None
+        if config.backend == "pcl":
+            from .pcl import PCLSession
+            self.pcl = PCLSession(self)
+            self._register_handler(
+                "START_INLINE_DOWNLOAD", self._h_start_inline_download,
+            )
+            self._register_handler("SET_TOKEN", self._h_set_token)
+            if config.remote_gcode:
+                self._register_handler("GCODE", self._h_gcode)
+
     def _register_handler(self, command_name: str, handler) -> None:
         """Attach a Connect command handler if the SDK knows the command."""
         cmd = getattr(Command, command_name, None)
@@ -131,6 +154,94 @@ class KonnectPrinter(SDKPrinter):
 
     # ---- lifecycle -----------------------------------------------------
 
+    CLOUD_HOST = "connect.prusa3d.com"
+
+    @property
+    def backend(self) -> str:
+        """The transport in use: "cloud" (SDK long-polling) or "pcl"
+        (the xBuddy WebSocket dialect a self-hosted server speaks)."""
+        return "pcl" if self.pcl is not None else "cloud"
+
+    def set_server(self, hostname: str, tls: bool, port: int) -> None:
+        """Point konnect at a server, switching transports if needed.
+
+        The official cloud speaks the SDK's HTTPS long-polling; any
+        custom address is assumed to be a self-hosted Connect-compatible
+        server speaking the xBuddy WebSocket protocol. Only valid while
+        unregistered — a token belongs to one server.
+        """
+        if self.token:
+            raise RuntimeError("Unregister before changing the server")
+        wanted = "cloud" if hostname == self.CLOUD_HOST else "pcl"
+        if wanted != self.backend:
+            # Swap the transport loop. Both loops exit promptly when
+            # running_loop drops; everything else (handlers, queue,
+            # command machinery, moonraker) is transport-agnostic.
+            self.stop_loop()
+            if self.connect_thread.is_alive():
+                self.connect_thread.join(timeout=10)
+            if wanted == "pcl":
+                from .pcl import PCLSession
+                self.pcl = PCLSession(self)
+            else:
+                self.pcl = None
+            self.cfg.backend = wanted
+        self.set_connection(self.connect_url(hostname, tls, port), "")
+        self.update_connect_settings(hostname, tls, port)
+        if not self.connect_thread.is_alive():
+            self.connect_thread = Thread(
+                target=self.loop, name="konnect-sdk-loop", daemon=True,
+            )
+            self.connect_thread.start()
+        log.info("Server set to %s (%s transport)", self.server, self.backend)
+
+    def register(self):
+        """Register with the server.
+
+        Cloud: the SDK's registration, which spells printer_type as the
+        numeric device code ("3.1.0"). A self-hosted server's capability
+        profiles use the model-name spelling ("XL") — its log notes the
+        numeric form as a spelling "the profile file does not use", and
+        its Specification panel shows the registered string verbatim —
+        so the custom backend registers with the name. Firmware is
+        whatever effective_firmware() resolved by registration time.
+        """
+        if self.backend != "pcl":
+            return super().register()
+        if not self.server:
+            raise RuntimeError("Server is not set")
+        from prusa.connect.printer import const as sdk_const
+        from prusa.connect.printer.models import Register
+        data = {
+            "sn": self.sn,
+            "fingerprint": self.fingerprint,
+            "printer_type": self.type.name if self.type else None,
+            "firmware": self.firmware,
+        }
+        res = self.conn.post(self.server + "/p/register",
+                             headers=self.make_headers(),
+                             json=data,
+                             timeout=sdk_const.CONNECTION_TIMEOUT)
+        if res.status_code != 200:
+            raise RuntimeError(res.text)
+        self.code = res.headers["Code"]
+        self.queue.put(Register(self.code))
+        return self.code
+
+    def loop(self) -> None:
+        """SDK HTTPS loop (cloud) or the PCL WebSocket session."""
+        if self.pcl is None:
+            return super().loop()
+        # Maintain the same running flag the SDK's loop() does, so
+        # running_loop / stop_loop() keep working. It is name-mangled
+        # private in the SDK base class, hence the explicit prefix.
+        self._Printer__running_loop = True
+        try:
+            self.pcl.loop()
+        finally:
+            self._Printer__running_loop = False
+        return None
+
     def start(self) -> None:
         """Kick off background startup (non-blocking)."""
         Thread(target=self._start, name="konnect-start", daemon=True).start()
@@ -143,6 +254,19 @@ class KonnectPrinter(SDKPrinter):
 
         # Wait for moonrakerdb to be reachable and seed our settings cache.
         self.db.load()
+
+        # PCL backend: the server address is an operator choice in
+        # konnect.cfg (the onboarding SPA posts the cloud's address), so
+        # it wins over whatever the db holds.
+        if self.pcl is not None and self.cfg.pcl_host:
+            stored = (
+                self.db.get("connect", "hostname"),
+                self.db.get("connect", "tls"),
+                int(self.db.get("connect", "port") or 0),
+            )
+            wanted = (self.cfg.pcl_host, self.cfg.pcl_tls, self.cfg.pcl_port)
+            if stored != wanted:
+                self.update_connect_settings(*wanted)
 
         # Serial number: user-supplied via UI, else MAC-derived default.
         sn = self.db.get("serial_number") or default_serial_number()
@@ -199,7 +323,7 @@ class KonnectPrinter(SDKPrinter):
             self.camera_controller.stop()
         self.download_mgr.stop_loop()
         self.inotify_thread.stop()
-        self.command_thread.stop()
+        self._cmd_stop.set()
         self.stop_loop()
         self.queue.put(None)  # unblock SDK loop
         self.moonraker.stop()
@@ -265,6 +389,12 @@ class KonnectPrinter(SDKPrinter):
     # (/usb is what real MK4-family printers expose).
     _MODERN_MOUNTPOINT = "/usb"
 
+    # Largest embedded thumbnail a FILE_INFO answer may carry. The
+    # xBuddy wire caps one frame at 2^16 bytes; the rest of the answer
+    # and JSON overhead need room too. 50000 fits a typical 300x300 PNG
+    # (~48KB of base64) with headroom.
+    PREVIEW_BYTES_BUDGET = 50000
+
     def get_info(self) -> dict[str, Any]:
         info = super().get_info()
         info["storages"] = modern_fs.build_storages(
@@ -277,6 +407,12 @@ class KonnectPrinter(SDKPrinter):
         info["sn"] = self.sn or ""
         info["appendix"] = False
         info["transfer_paused"] = False
+        # PCL's protocol doc shows INFO carrying printer_type as the
+        # "X.Y.Z" string (the SDK sends type/version/subversion split).
+        # Harmless to add; only done for PCL to keep the cloud payload
+        # byte-identical to released konnect versions.
+        if self.pcl is not None and self.type is not None:
+            info["printer_type"] = str(self.type)
         # Nozzle + tools. Connect's modern dashboards gate several
         # UI affordances (upload, start print) on having a valid
         # `tools` object describing at least one slot. We emit a
@@ -290,14 +426,23 @@ class KonnectPrinter(SDKPrinter):
             hasattr(self, "actions") and self.actions.info.tool.nozzle_diameter
         ) else 0.4
         info["nozzle_diameter"] = nozzle_d
+        # One tool entry per detected extruder — a toolchanger (e.g. the
+        # 4-head Snapmaker U1 advertising as a Prusa XL) gets all of its
+        # heads in the dashboard's tool strip.
+        tool_count = 1
+        if hasattr(self, "actions"):
+            tool_count = max(1, len(self.actions.extruders))
         info["tools"] = {
-            "1": {
+            str(index): {
                 "nozzle_diameter": nozzle_d,
                 "high_flow": False,
                 "hardened": False,
                 "material": material,
-            },
+            }
+            for index in range(1, tool_count + 1)
         }
+        if tool_count > 1:
+            info["slots"] = tool_count
         return info
 
     def _h_start_encrypted_download(self, _command: SDKCommand) -> dict[str, Any]:
@@ -322,6 +467,91 @@ class KonnectPrinter(SDKPrinter):
             "not implement. Use printer_type = HT90 for uploads."
         )
 
+    @staticmethod
+    def _normalize_device_path(path: str) -> str:
+        """Normalize the path variants servers send for printer storage.
+
+        Buddy firmware speaks /usb/…; a Connect server's own path
+        grammar is storage-prefixed without a leading slash (usb/…),
+        and a trailing slash may tag along on a directory. Map them all
+        onto the /usb/… form every konnect handler expects.
+        """
+        if path and not path.startswith("/"):
+            path = "/" + path
+        if len(path) > 1:
+            path = path.rstrip("/")
+        return path
+
+    def _modern_to_legacy(self, path: str) -> str:
+        """Translate the Buddy mountpoint (/usb/…) to the legacy
+        /<local_fs_name>/… prefix the SDK's Filesystem is attached under,
+        so SDK file handlers (delete, create folder) work on paths a
+        modern dashboard sends."""
+        path = self._normalize_device_path(path)
+        if path == self._MODERN_MOUNTPOINT or path.startswith(
+                self._MODERN_MOUNTPOINT + "/"):
+            return f"/{self.cfg.local_fs_name}" + \
+                path[len(self._MODERN_MOUNTPOINT):]
+        return path
+
+    def _translate_path_kwarg(self, command: SDKCommand) -> SDKCommand:
+        if command.kwargs and "path" in command.kwargs:
+            command.kwargs["path"] = self._modern_to_legacy(
+                command.kwargs["path"])
+        return command
+
+    def delete_file(self, caller: SDKCommand) -> dict[str, Any]:
+        return super().delete_file(self._translate_path_kwarg(caller))
+
+    def delete_folder(self, caller: SDKCommand) -> dict[str, Any]:
+        return super().delete_folder(self._translate_path_kwarg(caller))
+
+    def create_folder(self, caller: SDKCommand) -> dict[str, Any]:
+        return super().create_folder(self._translate_path_kwarg(caller))
+
+    def _h_start_inline_download(self, command: SDKCommand) -> dict[str, Any]:
+        """PCL pushes a file over the WebSocket (T chunks). Cloud mode
+        never registers this handler — see printer_types / pcl.py."""
+        if self.pcl is None:
+            raise RuntimeError("Inline download needs the PCL backend")
+        return self.pcl.start_inline_download(
+            command.kwargs or {}, command.command_id,
+        )
+
+    def _h_set_token(self, command: SDKCommand) -> dict[str, Any]:
+        """PCL rotates the printer token with SET_TOKEN."""
+        token = (command.kwargs or {}).get("token")
+        if not token:
+            raise RuntimeError("SET_TOKEN requires a token kwarg")
+        self.token = token
+        self.db.set("connect", "token", value=token)
+        return {"source": Source.CONNECT}
+
+    def _h_gcode(self, command: SDKCommand) -> dict[str, Any]:
+        """Forward a raw G/F frame to Klipper. Prusa and Klipper G-code
+        dialects mostly overlap for the M-codes a dashboard sends; a
+        line Klipper refuses fails the command with Klipper's reason."""
+        gcode = (command.kwargs or {}).get("gcode") or (
+            command.args[0] if command.args else "")
+        if not gcode.strip():
+            raise RuntimeError("Empty G-code command")
+        log.info("Server G-code command %d: %r",
+                 command.command_id, gcode[:200])
+        # 55s: just under the server's own 60s command deadline, so a
+        # blocking script (heat-and-wait, homing) fails on our side
+        # first with a real reason instead of silently overrunning.
+        # The command slot is occupied for the duration — that matches
+        # real Buddy firmware, which rejects everything else while a
+        # G-code runs.
+        result = self.moonraker(
+            "printer.gcode.script", {"script": gcode}, timeout=55.0,
+        )
+        if result != "ok":
+            raise RuntimeError(
+                f"gcode_script did not complete within 55s or failed: "
+                f"{result!r}")
+        return {"source": Source.CONNECT}
+
     def _h_send_file_info(self, command: SDKCommand) -> dict[str, Any]:
         """Respond to Connect's SEND_FILE_INFO with a Buddy-style payload.
 
@@ -332,7 +562,8 @@ class KonnectPrinter(SDKPrinter):
         HT90 / i3 dashboards keep working — both map to the same
         backing directory.
         """
-        raw = command.kwargs.get("path", self._MODERN_MOUNTPOINT)
+        requested = command.kwargs.get("path", self._MODERN_MOUNTPOINT)
+        raw = self._normalize_device_path(requested)
         # Translate the legacy /<local_fs_name> prefix to /usb so the
         # same backing dir serves both protocols.
         legacy_prefix = f"/{self.cfg.local_fs_name}"
@@ -346,20 +577,68 @@ class KonnectPrinter(SDKPrinter):
         )
         if data is None:
             raise RuntimeError(f"File not found: {command.kwargs.get('path')}")
+        # Echo the path exactly as the server spelled it — servers
+        # correlate the answer with the path they asked for, and the
+        # spellings differ (/usb/… from Buddy dashboards, usb/… from a
+        # self-hosted server's storage-prefixed grammar).
+        data["path"] = requested
+        if data["type"] == "PRINT_FILE":
+            self._attach_preview(data, raw)
         return {
             "source": Source.CONNECT,
             "event": Event.FILE_INFO,
             **data,
         }
 
+    def _attach_preview(self, data: dict[str, Any], norm_path: str) -> None:
+        """Add the file's embedded thumbnail to a FILE_INFO answer.
+
+        Servers ask per-file after a listing (one file at a time, cached
+        per file version), so the parse cost is paid once per file.
+        Failure to parse is just an answer with no picture.
+        """
+        target = modern_fs._resolve_under(  # noqa: SLF001 - same package
+            Path(self.cfg.local_gcode_path),
+            self._MODERN_MOUNTPOINT,
+            norm_path,
+        )
+        if target is None or target.name.startswith("."):
+            return
+        try:
+            from gcode_metadata import get_metadata
+            meta = get_metadata(str(target))
+            data.update(meta.data)
+            # Send the largest thumbnail that fits one wire frame.
+            # gcode_metadata can surface only one of several embedded
+            # sizes (seen: a 300x300 reported, the 48x48 beside it
+            # dropped), so when nothing fits, the file itself is
+            # scanned for all of its thumbnail blocks.
+            candidates = dict(meta.thumbnails or {})
+            if not any(len(thumb) <= self.PREVIEW_BYTES_BUDGET
+                       for thumb in candidates.values()):
+                candidates.update(modern_fs.extract_thumbnails(target))
+            best = b""
+            for thumb in candidates.values():
+                if len(best) < len(thumb) <= self.PREVIEW_BYTES_BUDGET:
+                    best = thumb
+            if best:
+                data["preview"] = best.decode()
+        except Exception:  # noqa: BLE001
+            log.debug("No readable metadata in %s", target, exc_info=True)
+
     # ---- command handlers ---------------------------------------------
 
-    def _command_tick(self) -> None:
-        # The SDK's Command.new_cmd_evt is fired when Connect pushes a job.
-        # InfinityThread wraps this in a loop; if we miss the 200ms edge
-        # we just retry — no harm.
-        if self.command.new_cmd_evt.wait(0.2):
-            self.command()
+    def _command_loop(self) -> None:
+        """Run accepted commands as soon as they land.
+
+        The SDK's Command.new_cmd_evt fires when a command is accepted;
+        the wait timeout only bounds how fast shutdown is noticed."""
+        while not self._cmd_stop.is_set():
+            try:
+                if self.command.new_cmd_evt.wait(0.2):
+                    self.command()
+            except Exception:  # noqa: BLE001
+                log.exception("command loop raised")
 
     def _h_job_info(self, command: SDKCommand) -> dict[str, Any]:
         requested = int(command.kwargs.get("job_id", 0))
@@ -398,7 +677,7 @@ class KonnectPrinter(SDKPrinter):
         # (HT90 / i3 dashboards) or the Buddy-style
         # `/<modern_mountpoint>/foo.gcode` (MK4 / Core One). Accept
         # both and strip to the moonraker-relative filename.
-        raw_path = command.kwargs.get("path", "")
+        raw_path = self._normalize_device_path(command.kwargs.get("path", ""))
         filename = None
         for prefix in (
             f"/{self.cfg.local_fs_name}/",
@@ -452,6 +731,17 @@ class KonnectPrinter(SDKPrinter):
         self._register_camera(snapshot_url)
 
     def _register_camera(self, snapshot_url: str) -> None:
+        if self.pcl is not None:
+            # Camera push (/p/camera + snapshot POSTs) is a cloud
+            # feature. PCL pulls streams itself: declare an mjpeg
+            # camera resource on the server pointing at the snapshot
+            # URL instead.
+            log.info(
+                "Skipping camera push registration (custom server). "
+                "Declare a camera resource on the server with "
+                "snapshot_url: %s", snapshot_url,
+            )
+            return
         camera_id = "camera-" + self.fingerprint[:26]
         camera_token = self.db.get("camera", "token") or ""
         self.camera_driver = CrowsnestDriver(

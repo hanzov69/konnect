@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-PackageHomePage: https://github.com/hanzov69/konnect
+
+# Deep-merged into 24_settings_cloud.yaml's remote_access/cloud item:
+# Konnect becomes a third provider in the stock Cloud Access dropdown
+# (none / octoeverywhere / konnect). Provider dispatch lives in
+# S99cloud (patched by this mod) + S98konnect.
+settings:
+  remote_access:
+    items:
+      cloud:
+        options:
+          konnect:
+            label: Konnect
+            cmd:
+              - bash
+              - -ec
+              - |
+                echo ">> Downloading Konnect package (if needed)..."
+                /usr/local/bin/extended-pkg konnect download
+
+                echo ">> Selecting Konnect as the remote-access provider..."
+                /usr/local/bin/extended-config.py add /home/lava/printer_data/config/extended/extended2.cfg remote_access cloud konnect
+
+                echo ">> Restarting the cloud service..."
+                /etc/init.d/S99cloud restart
+
+                echo
+                echo "Konnect enabled. Open http://<printer-ip>/konnect/ to register"
+                echo "this printer with Prusa Connect — or choose 'Custom server'"
+                echo "there to use your own Connect-compatible server."

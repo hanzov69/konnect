@@ -2,6 +2,16 @@
 
 Prusa Connect for any Klipper/Moonraker printer.
 
+> **This branch (`u1-konnect`):** konnect can also register with a
+> **custom, Connect-compatible server** instead of the cloud (see
+> [Custom Connect server backend](#custom-connect-server-backend)), and
+> it runs on a **Snapmaker U1** with
+> [paxx12's extended firmware](https://github.com/paxx12-snapmaker-u1/SnapmakerU1-Extended-Firmware)
+> — a composable firmware mod lives in [contrib/u1](contrib/u1/README.md).
+> On a toolchanger, konnect auto-detects every Klipper extruder and
+> reports per-head temperatures the Buddy way (`slot` telemetry), so
+> advertising as a Prusa XL shows all four U1 heads.
+
 A Python service + onboarding web UI + KlipperScreen panel that registers a
 generic Klipper printer with [connect.prusa3d.com](https://connect.prusa3d.com)
 — the same cloud dashboard that ships on Prusa's own printers. Built on
@@ -64,6 +74,62 @@ WebSocket protocol, we can add the upload path without touching the rest.
 > fingerprint — click *Unregister* (or `curl -X DELETE
 > http://<printer>/konnect/connection`) and re-register.
 
+## Custom Connect server backend
+
+Besides the official cloud, konnect can register with a self-hosted,
+Connect-compatible server — one that speaks the **printer-facing xBuddy
+WebSocket protocol** real Buddy firmware uses (registration via
+`/p/register` with the code/token flow, then telemetry, events, commands
+and file chunks over a WebSocket at `/p/ws`). konnect implements the
+printer side of that protocol in `konnect/pcl.py`.
+
+Because the transport is the real Buddy one, the cloud's big limitation
+disappears: **uploads from the server's dashboard work** (files arrive
+via `START_INLINE_DOWNLOAD` + binary chunks — no encrypted
+side-channel). Pick `MK4S`, `COREONE` (chamber controls) or `XL`
+(toolchanger) as the printer type; `HT90` is the cloud recommendation,
+not the right pick here.
+
+The easy path: in the onboarding UI's register step, choose **Custom
+server**, enter the hostname/port, and click *Get code*. konnect
+switches transports automatically from the server choice. The pending
+printer appears on the server's add-printer page — check the code
+matches and approve it. The token is stored in moonrakerdb exactly as
+with the cloud; *Unregister* (or `DELETE /connection`) resets it.
+
+Alternatively, pin the server in `~/printer_data/config/konnect.cfg`
+(used as the default when the UI doesn't name one):
+
+```ini
+[konnect]
+backend = pcl
+pcl_host = your-server.lan
+pcl_port = 8080
+pcl_tls = false
+printer_type = XL
+# Forward server-sent raw G-code frames to Klipper (default true):
+# remote_gcode = false
+# Debug: log every WebSocket frame to /tmp/konnect_ws.log:
+# ws_spy = true
+```
+
+Differences from the cloud backend:
+
+- Cameras: such servers *pull* streams themselves rather than accepting
+  pushed snapshots. Declare a camera on the server pointing at a
+  snapshot URL; konnect's camera page suggests one (it discovers
+  Moonraker-registered webcams as well as Crowsnest streams).
+- Raw G-code frames (`G`/`F`) from the server are forwarded to Klipper
+  via `printer.gcode.script` unless `remote_gcode = false`.
+- `SET_TOKEN` (token rotation) is honored.
+- Query commands are answered with their data event alone, inline file
+  transfers adapt to the server's chunk ceiling, and `FILE_INFO`
+  answers echo the path exactly as the server spelled it — the
+  firmware-faithful details live in `konnect/pcl.py`.
+
+Run the transport's unit tests with `python tests/test_pcl.py` and
+`python tests/test_u1.py`.
+
 ## Firmware version
 
 Connect displays a `Firmware` field for each printer. By default konnect
@@ -74,6 +140,8 @@ picks a version string appropriate to your `printer_type`:
 | `HT90` | `1.3.19+6969` |
 | `MK4S` | `6.4.19+6969` |
 | `COREONE` | `6.4.19+6969` |
+| `MK4` | `6.4.19+6969` |
+| `XL` | `6.4.19+6969` |
 
 The HT90 number matches real HT90 firmware release numbering; MK4S / Core
 One match Prusa's Buddy firmware scheme — high enough that Connect's
@@ -103,14 +171,14 @@ curl -fsSL https://raw.githubusercontent.com/hanzov69/konnect/main/scripts/boots
 ```
 
 Env overrides (pin a release, use a fork, relocate the checkout):
-`KONNECT_REF=0.2.1`, `KONNECT_REPO=…`, `KONNECT_DIR=…`.
+`KONNECT_REF=u1-0.3.0`, `KONNECT_REPO=…`, `KONNECT_DIR=…`.
 
 ### Manual install (tarball)
 
 ```sh
 cd ~
-tar -xzf konnect-0.2.1.tar.gz
-mv konnect-0.2.1 konnect    # or however the tarball unpacks
+tar -xzf konnect-0.3.0.tar.gz
+mv konnect-0.3.0 konnect    # or however the tarball unpacks
 ./konnect/scripts/install.sh
 ```
 

@@ -26,6 +26,7 @@ Schema references:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,56 @@ _PRINTABLE_EXTS: tuple[str, ...] = (
     ".g", ".gc", ".gco", ".gcode", ".bgcode", ".bgc",
 )
 _FIRMWARE_EXTS: tuple[str, ...] = (".bbf",)
+
+
+_THUMB_BEGIN = re.compile(
+    rb";\s*thumbnail(?:_(\w+))?\s+begin\s+(\d+)x(\d+)\s+(\d+)")
+_THUMB_END = re.compile(rb";\s*thumbnail(?:_\w+)?\s+end")
+
+
+def extract_thumbnails(
+    path: str | os.PathLike,
+    head_bytes: int = 1 << 20,
+    tail_bytes: int = 1 << 17,
+) -> dict[str, bytes]:
+    """Every base64 thumbnail embedded in a G-code file, keyed WxH.
+
+    Slicers write ``; thumbnail begin WxH <len>`` comment blocks (the
+    PrusaSlicer convention, kept by Orca and its forks). gcode_metadata
+    sometimes surfaces only one of several embedded sizes, so this is
+    the fallback that reads them all. QOI blocks are skipped — a
+    dashboard renders PNG/JPEG. Only the head and tail of the file are
+    scanned; that is where every known slicer puts them.
+    """
+    regions: list[bytes] = []
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            regions.append(fh.read(head_bytes))
+            if size > head_bytes:
+                fh.seek(max(head_bytes, size - tail_bytes))
+                regions.append(fh.read(tail_bytes))
+    except OSError:
+        return {}
+
+    found: dict[str, bytes] = {}
+    for region in regions:
+        for match in _THUMB_BEGIN.finditer(region):
+            fmt = (match.group(1) or b"PNG").upper()
+            if fmt not in (b"PNG", b"JPG", b"JPEG"):
+                continue
+            end = _THUMB_END.search(region, match.end())
+            if end is None:
+                continue
+            block = region[match.end():end.start()]
+            data = b"".join(
+                line.strip().lstrip(b";").strip()
+                for line in block.splitlines()
+            )
+            if data:
+                key = f"{int(match.group(2))}x{int(match.group(3))}"
+                found[key] = data
+    return found
 
 
 def file_type_by_ext(name: str) -> str:
@@ -68,16 +119,26 @@ def build_storages(
     actually a USB stick — so do we.
     """
     try:
+        # statvfs is Unix-only; AttributeError covers dev boxes.
         st = os.statvfs(root)
         free = st.f_bavail * st.f_frsize
-    except OSError:
+        total = st.f_blocks * st.f_frsize
+    except (OSError, AttributeError):
         free = 0
+        total = 0
     return [
         {
+            # Buddy firmware (render.cpp) sends path/name/available;
+            # Connect's cloud dashboards read mountpoint. Send both so
+            # either server recognizes the storage.
             "mountpoint": mountpoint,
+            "path": mountpoint + "/",
+            "name": mountpoint.lstrip("/"),
+            "available": True,
             "type": "USB",
             "read_only": False,
             "free_space": free,
+            "total_space": total,
             "is_sfn": True,
         },
     ]
@@ -91,18 +152,19 @@ def _resolve_under(
     """Map a Connect-supplied ``/usb/sub/foo.gcode`` path to a real
     filesystem path under ``root``.
 
-    Returns ``None`` if the request escapes via ``..`` or symlinks,
-    or if the mountpoint prefix doesn't match.
+    Confinement is lexical: a ``..`` segment from the wire is refused,
+    but a symlink the operator placed inside the gcodes directory is
+    followed — Klipper tooling routinely symlinks directories like
+    shaper_calibrate into gcodes, and Moonraker serves them the same
+    way. Returns ``None`` for traversal or a mountpoint mismatch.
     """
     if not req_path.startswith(mountpoint):
         return None
     tail = req_path[len(mountpoint):].lstrip("/")
-    try:
-        target = (root / tail).resolve()
-        target.relative_to(root.resolve())
-    except (OSError, ValueError):
+    parts = [part for part in tail.split("/") if part not in ("", ".")]
+    if any(part == ".." for part in parts):
         return None
-    return target
+    return root.joinpath(*parts) if parts else root
 
 
 def file_info(

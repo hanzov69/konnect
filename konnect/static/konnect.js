@@ -123,15 +123,29 @@
     }, 2000);
   };
 
+  // Server choice: official Prusa Connect (default) or a custom,
+  // Connect-compatible server (host/port/tls). The service picks the
+  // matching transport from the hostname.
+  const serverOpts = () => {
+    if (!$("#server-custom").checked) {
+      return { hostname: "connect.prusa3d.com", tls: true, port: 443 };
+    }
+    const hostname = $("#server-host").value.trim();
+    if (!hostname) throw new Error("Enter the custom server's hostname");
+    return {
+      hostname,
+      tls: $("#server-tls").checked,
+      port: parseInt($("#server-port").value, 10) || 8080,
+    };
+  };
+
+  const toggleCustomFields = () => {
+    $("#custom-server-fields").hidden = !$("#server-custom").checked;
+  };
+
   const startRegister = async () => {
     try {
-      const r = await api("POST", "/connection", {
-        connect: {
-          hostname: "connect.prusa3d.com",
-          tls: true,
-          port: 443,
-        },
-      });
+      const r = await api("POST", "/connection", { connect: serverOpts() });
       $("#code-box").textContent = r.code || "—";
       drawQR(r.url || "https://connect.prusa3d.com/add");
       $("#connect-link").href = r.url || "https://connect.prusa3d.com/add";
@@ -311,6 +325,24 @@
   $("#register-back").addEventListener("click", gotoIdentity);
   $("#register-go").addEventListener("click", startRegister);
   $("#register-cancel").addEventListener("click", cancelRegister);
+  $("#server-cloud").addEventListener("change", toggleCustomFields);
+  $("#server-custom").addEventListener("change", toggleCustomFields);
+  // Pre-select the custom server when the service is already pointed at
+  // one (operator-pinned in konnect.cfg, or a previous registration).
+  (async () => {
+    try {
+      const c = state.connection || await api("GET", "/connection");
+      if (c.backend === "pcl" && c.server) {
+        const u = new URL(c.server);
+        $("#server-custom").checked = true;
+        $("#server-host").value = u.hostname;
+        $("#server-port").value = u.port ||
+          (u.protocol === "https:" ? 443 : 80);
+        $("#server-tls").checked = u.protocol === "https:";
+        toggleCustomFields();
+      }
+    } catch { /* defaults are fine */ }
+  })();
 
   $("#camera-skip").addEventListener("click", gotoDashboard);
   $("#camera-next").addEventListener("click", async () => {

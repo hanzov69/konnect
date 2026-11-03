@@ -72,9 +72,12 @@ _COMMAND_EXTENSIONS: tuple[tuple[str, str], ...] = (
     # Encrypted file upload from Connect to the printer — matches
     # src/connect/command.cpp in Prusa-Firmware-Buddy.
     ("START_ENCRYPTED_DOWNLOAD", "START_ENCRYPTED_DOWNLOAD"),
-    # Inline (non-encrypted) variant Buddy also understands; unused
-    # in current Connect deployments but registered defensively.
+    # Inline (non-encrypted) variant Buddy also understands. Unused by
+    # the cloud, but it is how a self-hosted Connect server pushes files
+    # over the xBuddy WebSocket — see konnect/pcl.py.
     ("START_INLINE_DOWNLOAD", "START_INLINE_DOWNLOAD"),
+    # Token rotation, sent by self-hosted Connect servers.
+    ("SET_TOKEN", "SET_TOKEN"),
 )
 
 

@@ -1,0 +1,21 @@
+Raise firmware-config's memory cap from 48M to 72M.
+
+The konnect mod adds a settings section to the firmware-config page, and
+every settings item's get_cmd spawns an extended-config.py subprocess (a
+full python3) inside firmware-config's own cgroup. The stock 48M cap was
+already within one subprocess of the ceiling on a loaded page — observed
+on hardware as a CONSTRAINT_MEMCG oom-kill of firmware-config.py at
+anon-rss 43.7M — so the overlay that adds an item also raises the budget
+it runs in.
+
+--- a/etc/init.d/S99firmware-config
++++ b/etc/init.d/S99firmware-config
+@@ -31,7 +31,7 @@
+     fi
+
+     . /usr/local/sbin/limits-helper.sh
+-    limits_enter firmware-config 48M
++    limits_enter firmware-config 72M
+
+     start-stop-daemon -S -b -m -p "$PIDFILE" -x /usr/bin/python3 -- \
+         "$DAEMON" --bind "$BIND" --port "$PORT" \

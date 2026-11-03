@@ -100,6 +100,69 @@ def discover_crowsnest_cameras(
     return cams
 
 
+def discover_moonraker_webcams(
+    moonraker,
+    external_host: str | None = None,
+) -> list[DiscoveredCamera]:
+    """Webcams registered in Moonraker (``server.webcams.list``).
+
+    The canonical registry on stacks without crowsnest.conf — e.g. the
+    Snapmaker U1 extended firmware announces its v4l2-mpp camera as
+    ``[webcam case]`` with ``snapshot_url: /webcam/snapshot.jpg``.
+    Relative and loopback URLs are rewritten against external_host so
+    the result is reachable from another machine (what a Prusa Connect
+    Local server needs to pull snapshots).
+    """
+    try:
+        result = moonraker("server.webcams.list", timeout=2.0)
+    except Exception:  # noqa: BLE001
+        log.exception("server.webcams.list failed")
+        return []
+    if not result:
+        return []
+    cams = []
+    for cam in result.get("webcams", []):
+        if cam.get("enabled") is False:
+            continue
+        snapshot = (cam.get("snapshot_url") or "").strip()
+        if not snapshot:
+            continue
+        cams.append(DiscoveredCamera(
+            name=cam.get("name") or "webcam",
+            port=0,
+            mode=cam.get("service") or "moonraker",
+            snapshot_url=externalize_url(snapshot, external_host),
+        ))
+    return cams
+
+
+def externalize_url(url: str, external_host: str | None) -> str:
+    """Make a Moonraker-relative or loopback URL reachable from outside.
+
+    ``/webcam/snapshot.jpg`` is relative to the printer's web root
+    (nginx on port 80); ``http://127.0.0.1:8080/…`` is reachable only
+    on the printer itself. Both are rewritten onto external_host (a
+    Host header value; any port is dropped for the relative case and
+    kept for the loopback case).
+
+    >>> externalize_url("/webcam/snapshot.jpg", "printer.lan:7130")
+    'http://printer.lan/webcam/snapshot.jpg'
+    >>> externalize_url("http://127.0.0.1:8080/snap", "printer.lan")
+    'http://printer.lan:8080/snap'
+    >>> externalize_url("http://cam.lan/snap", "printer.lan")
+    'http://cam.lan/snap'
+    """
+    if not external_host:
+        return url
+    hostname = external_host.rsplit(":", 1)[0] if not external_host.startswith(
+        "[") else external_host.split("]")[0] + "]"
+    if url.startswith("/"):
+        return f"http://{hostname}{url}"
+    return re.sub(
+        r"//(127\.0\.0\.1|localhost)(?=[:/]|$)", f"//{hostname}", url,
+    )
+
+
 class CrowsnestDriver(CameraDriver):
     """SDK-compatible driver: downloads a JPEG from Crowsnest on demand."""
     name = "crowsnest"

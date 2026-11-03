@@ -18,6 +18,7 @@ pause_resume). Missing objects silently stay None; Connect handles that.
 from __future__ import annotations
 
 import logging
+import re
 from queue import Empty, Queue
 from threading import Thread
 from time import time
@@ -76,6 +77,13 @@ class Actions:
         self.last_online = 0.0
         self.queue: Queue = Queue()
         self._stop = False
+        # Toolchanger support (e.g. the 4-head Snapmaker U1): Klipper
+        # names the heads extruder, extruder1, … — detected from
+        # printer.objects.list on (re)subscribe. toolhead.extruder names
+        # the picked head.
+        self.extruders: list[str] = ["extruder"]
+        self._active_extruder = "extruder"
+        self._slot_state: dict[str, dict] = {}
 
         self._callbacks: dict[str, Callback] = {
             "notify_status_update": self.send_telemetry,
@@ -146,9 +154,8 @@ class Actions:
         Objects that may or may not exist on a given printer: listing them
         is safe — Moonraker just omits missing ones from the response.
         """
-        return {
+        objects = {
             "display_status": ["progress", "message"],
-            "extruder": ["target", "temperature"],
             "fan": ["speed"],
             "filament_switch_sensor fil_sensor": ["filament_detected"],
             "gcode_move": ["extrude_factor", "speed_factor"],
@@ -159,12 +166,36 @@ class Actions:
             ],
             "pause_resume": ["pause_reason", "is_paused"],
             "save_variables": ["variables"],
-            "toolhead": ["estimated_print_time", "position"],
+            # `extruder` is the picked head's name on a toolchanger.
+            "toolhead": ["estimated_print_time", "position", "extruder"],
             "virtual_sdcard": ["progress"],
         }
+        for name in self.extruders:
+            objects[name] = ["target", "temperature"]
+        return objects
+
+    def _detect_extruders(self, moonraker) -> None:
+        """Find every extruder object Klipper exposes (toolchangers have
+        extruder, extruder1, …). Called on (re)subscribe so a Klipper
+        restart with a changed config is picked up."""
+        result = moonraker("printer.objects.list", timeout=2.0)
+        if not result:
+            return
+        found = sorted(
+            (name for name in result.get("objects", [])
+             if name == "extruder" or re.fullmatch(r"extruder\d+", name)),
+            key=lambda n: int(n[len("extruder"):] or 0),
+        )
+        if found and found != self.extruders:
+            log.info("Detected extruders: %s", ", ".join(found))
+            self.extruders = found
+            self._slot_state = {}
+            if self._active_extruder not in found:
+                self._active_extruder = found[0]
 
     def subscribe(self, moonraker, _params) -> None:
         """(Re-)subscribe and seed state immediately from the response."""
+        self._detect_extruders(moonraker)
         result = moonraker(
             "printer.objects.subscribe",
             {"objects": self.subscribe_objects},
@@ -214,10 +245,41 @@ class Actions:
         g = nested_get  # shorten — lots of uses below
         new.temp_bed = g(params, "heater_bed", "temperature")
         new.target_bed = g(params, "heater_bed", "target")
-        new.temp_nozzle = g(params, "extruder", "temperature")
-        new.target_nozzle = g(params, "extruder", "target")
         new.temp_chamber = g(params, "heater_chamber", "temperature")
         new.target_chamber = g(params, "heater_chamber", "target")
+
+        # Per-head temperatures. Single-tool printers go through the
+        # same path with a one-entry list. Status updates are diffs, so
+        # per-head state is accumulated across calls.
+        if active := g(params, "toolhead", "extruder"):
+            self._active_extruder = active
+        for name in self.extruders:
+            head = params.get(name)
+            if not isinstance(head, dict):
+                continue
+            entry = self._slot_state.setdefault(name, {})
+            if (temp := head.get("temperature")) is not None:
+                entry["temp"] = round(temp, 1)
+            if (target := head.get("target")) is not None:
+                entry["target"] = target
+        picked = self._slot_state.get(self._active_extruder, {})
+        # Buddy semantics: top-level temp/target are the picked head's.
+        new.temp_nozzle = picked.get("temp")
+        new.target_nozzle = picked.get("target")
+        if len(self.extruders) > 1:
+            slot: dict = {}
+            for index, name in enumerate(self.extruders, start=1):
+                entry = self._slot_state.get(name)
+                if entry and "temp" in entry:
+                    slot[str(index)] = {"temp": entry["temp"]}
+            if slot:
+                try:
+                    slot["active"] = (
+                        self.extruders.index(self._active_extruder) + 1
+                    )
+                except ValueError:
+                    slot["active"] = 1
+                new.slot = slot
 
         material = g(params, "save_variables", "variables", "loaded_filament")
         if material and material != "NONE":

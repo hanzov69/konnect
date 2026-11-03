@@ -28,6 +28,7 @@ from http import HTTPStatus
 from pathlib import Path
 from socket import gethostbyname
 from threading import Thread
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from io import BytesIO
@@ -41,7 +42,10 @@ from prusa.connect.printer.const import (
     State,
 )
 
-from .camera import discover_crowsnest_cameras
+from .camera import (
+    discover_crowsnest_cameras,
+    discover_moonraker_webcams,
+)
 from .printer import KonnectPrinter
 
 log = logging.getLogger(__name__)
@@ -60,8 +64,59 @@ STATIC_DIR = Path(__file__).parent / "static"
 SUPPORTED_PRINTER_TYPES: tuple[str, ...] = ("HT90", "MK4S", "COREONE")
 
 # The default selection in the onboarding wizard. HT90 is the
-# recommended pick.
+# recommended pick for the cloud; against a custom (self-hosted) server
+# uploads travel over the WebSocket, so the modern types work
+# end-to-end and MK4S is the recommendation (such servers profile the
+# Buddy device models; HT90 may not be among them).
 DEFAULT_PRINTER_TYPE: str = "HT90"
+DEFAULT_PRINTER_TYPE_PCL: str = "MK4S"
+
+PRINTER_TYPE_HINTS_PCL: dict[str, dict[str, str]] = {
+    "MK4S": {
+        "label": "Prusa MK4S (recommended)",
+        "description": (
+            "Modern dashboard, and on a self-hosted server everything "
+            "works end-to-end: file listing, uploads from the server's "
+            "UI (inline WebSocket transfer), Set Ready, print start."
+        ),
+        "recommended_for": "Default pick for a custom server",
+        "warning": "",
+    },
+    "COREONE": {
+        "label": "Prusa Core One (chamber controls)",
+        "description": (
+            "Same feature set as MK4S plus chamber temperature controls "
+            "— konnect forwards chamber_target_temp to your "
+            "[heater_chamber] if you have one."
+        ),
+        "recommended_for": "CoreXY with a heated chamber",
+        "warning": "",
+    },
+    "XL": {
+        "label": "Prusa XL (toolchanger)",
+        "description": (
+            "The toolchanger profile. konnect detects every Klipper "
+            "extruder (extruder, extruder1, …) and reports per-head "
+            "temperatures the Buddy way, so a multi-tool machine like "
+            "the Snapmaker U1 shows all of its heads."
+        ),
+        "recommended_for": "Toolchangers — Snapmaker U1, multi-extruder Klipper",
+        "warning": "",
+    },
+    "HT90": {
+        "label": "Prusa Pro HT90 (not recommended here)",
+        "description": (
+            "The legacy type konnect recommends against the cloud. A "
+            "self-hosted server profiles capabilities per Buddy device "
+            "model and may not carry an HT90 profile."
+        ),
+        "recommended_for": "Cloud deployments — pick MK4S here",
+        "warning": (
+            "⚠ The server may refuse or misprofile the HT90 type. "
+            "MK4S / Core One / XL are the tested picks here."
+        ),
+    },
+}
 
 # Hints shown in the onboarding UI for each type we expose.
 # `warnings` surfaces as a red-banner message next to the card.
@@ -116,6 +171,18 @@ PRINTER_TYPE_HINTS: dict[str, dict[str, str]] = {
         ),
     },
 }
+
+
+def _add_printer_url(printer: KonnectPrinter) -> str:
+    """Where a person approves this printer.
+
+    Cloud: the deep link that pre-fills the code. Custom server: its
+    Add-a-printer page — the pending registration appears there by
+    itself; the person just checks the code matches and clicks Approve.
+    """
+    if printer.backend == "pcl":
+        return f"{printer.server}/printers/add"
+    return f"{printer.server}/add-printer/connect/{printer.type}/{printer.code}"
 
 
 def create_app(printer: KonnectPrinter) -> Flask:
@@ -197,10 +264,7 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
         # the user having to click through POST /connection again.
         add_url = None
         if printer.code and printer.server:
-            add_url = (
-                f"{printer.server}/add-printer/connect/"
-                f"{printer.type}/{printer.code}"
-            )
+            add_url = _add_printer_url(printer)
 
         return jsonify({
             "initialised": printer.is_initialised(),
@@ -209,6 +273,9 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
             "code": printer.code,
             "url": add_url,
             "registration": registration.value,
+            "server": printer.server,
+            "backend": printer.backend,
+            "cloud_host": printer.CLOUD_HOST,
         })
 
     @app.route("/connection", methods=["POST"])
@@ -222,39 +289,60 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
             printer.unregister_camera()
 
         payload = request.get_json(silent=True) or {}
-        if connect_opts := payload.get("connect"):
-            hostname = connect_opts.get(
-                "hostname", printer.db.get("connect", "hostname"),
+        opts = payload.get("connect") or {}
+        hostname = (opts.get("hostname") or "").strip()
+        if not hostname:
+            # No server named: the operator-pinned custom server from
+            # konnect.cfg if this install was configured for one,
+            # otherwise the official Prusa Connect.
+            if printer.cfg.backend == "pcl" and printer.cfg.pcl_host:
+                hostname = printer.cfg.pcl_host
+                tls = bool(opts.get("tls", printer.cfg.pcl_tls))
+                port = int(opts.get("port") or printer.cfg.pcl_port or 0)
+            else:
+                hostname = printer.CLOUD_HOST
+                tls, port = True, 443
+        else:
+            custom = hostname != printer.CLOUD_HOST
+            tls = bool(opts.get("tls", not custom))
+            port = int(opts.get("port") or (8080 if custom else 443))
+
+        try:
+            gethostbyname(hostname)
+        except OSError:
+            return jsonify({"error": "Can't resolve hostname"}), HTTPStatus.BAD_REQUEST
+
+        url = printer.connect_url(hostname, tls, port)
+        # A custom server has no /info; probe the registration route we
+        # are about to use. Any HTTP answer — an error status included —
+        # proves a server is there.
+        probe = "/info" if hostname == printer.CLOUD_HOST else "/p/register"
+        try:
+            with urlopen(f"{url}{probe}", timeout=5):
+                pass
+        except HTTPError:
+            pass
+        except Exception:  # noqa: BLE001
+            return (
+                jsonify({"error": "Can't reach Connect"}),
+                HTTPStatus.BAD_REQUEST,
             )
-            tls = connect_opts.get("tls", printer.db.get("connect", "tls"))
-            port = int(connect_opts.get(
-                "port", printer.db.get("connect", "port"),
-            ) or 0)
 
-            try:
-                gethostbyname(hostname)
-            except OSError:
-                return jsonify({"error": "Can't resolve hostname"}), HTTPStatus.BAD_REQUEST
-
-            url = printer.connect_url(hostname, tls, port)
-            try:
-                with urlopen(f"{url}/info", timeout=5):
-                    pass
-            except Exception:  # noqa: BLE001
-                return (
-                    jsonify({"error": "Can't reach Connect"}),
-                    HTTPStatus.BAD_REQUEST,
-                )
-
-            printer.set_connection(url, "")
-            printer.update_connect_settings(hostname, tls, port)
+        try:
+            # Switches transport when the server kind changed: the
+            # official cloud speaks the SDK's long-polling, a custom
+            # address the xBuddy WebSocket dialect.
+            printer.set_server(hostname, tls, port)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), HTTPStatus.CONFLICT
 
         code = printer.register()
-        url = (
-            f"{printer.server}/add-printer/connect/"
-            f"{printer.type}/{code}"
-        )
-        return jsonify({"url": url, "code": printer.code})
+        return jsonify({
+            "url": _add_printer_url(printer),
+            "code": code,
+            "server": printer.server,
+            "backend": printer.backend,
+        })
 
     @app.route("/connection", methods=["DELETE"])
     def delete_connection():  # noqa: ANN202
@@ -363,12 +451,15 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
         via `printer_type = ...` in konnect.cfg — we just don't
         surface legacy / unusual models in the default wizard.
         """
+        is_pcl = printer.backend == "pcl"
+        hints = PRINTER_TYPE_HINTS_PCL if is_pcl else PRINTER_TYPE_HINTS
+        order = tuple(hints) if is_pcl else SUPPORTED_PRINTER_TYPES
         types = []
-        for name in SUPPORTED_PRINTER_TYPES:
+        for name in order:
             member = getattr(PrinterType, name, None)
             if member is None:  # unknown SDK version, skip
                 continue
-            hint = PRINTER_TYPE_HINTS[name]
+            hint = hints[name]
             types.append({
                 "name": member.name,
                 "value": list(member.value),
@@ -379,16 +470,42 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
             })
         return jsonify({
             "current": printer.type.name if printer.type else None,
-            "default": DEFAULT_PRINTER_TYPE,
+            "default": DEFAULT_PRINTER_TYPE_PCL if is_pcl
+            else DEFAULT_PRINTER_TYPE,
+            "backend": printer.backend,
             "types": types,
         })
 
     # ---- camera ----
     @app.route("/cameras", methods=["GET"])
     def get_cameras():  # noqa: ANN202
-        detected = discover_crowsnest_cameras(printer.cfg.crowsnest_config)
+        # Moonraker's webcam registry first (the canonical source on
+        # e.g. the Snapmaker U1 extended firmware), then crowsnest.conf
+        # (classic MainsailOS stacks). URLs are rewritten onto the host
+        # the browser reached us by, so they work from another machine.
+        host = request.host
+        detected = discover_moonraker_webcams(printer.moonraker, host)
+        seen = {c.snapshot_url for c in detected}
+        detected += [
+            c for c in discover_crowsnest_cameras(
+                printer.cfg.crowsnest_config,
+                host=host.rsplit(":", 1)[0],
+            ) if c.snapshot_url not in seen
+        ]
+        suggested = detected[0].snapshot_url if detected else ""
+        hint = ""
+        if printer.backend == "pcl":
+            hint = (
+                "Camera push is a cloud feature. Your Connect server pulls "
+                "streams itself — declare an mjpeg camera resource on the "
+                "server pointing at a snapshot URL"
+                + (f", e.g. {suggested}" if suggested else " below")
+                + "."
+            )
         return jsonify({
             "detected": [c.as_dict() for c in detected],
+            "suggested": suggested,
+            "hint": hint,
             "selected": {
                 "snapshot_url": printer.db.get("camera", "snapshot_url") or "",
                 "stream_name": printer.db.get("camera", "stream_name") or "",

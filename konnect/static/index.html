@@ -57,11 +57,27 @@
 
   <!-- Step 3: register -->
   <section id="step-register" class="step" hidden>
-    <h2>3. Register with Prusa Connect</h2>
+    <h2>3. Register with Connect</h2>
+    <fieldset id="server-choice" style="border:0;padding:0;margin:0 0 12px">
+      <label style="display:block;margin:4px 0">
+        <input type="radio" name="server-kind" id="server-cloud" checked>
+        Prusa Connect (connect.prusa3d.com)
+      </label>
+      <label style="display:block;margin:4px 0">
+        <input type="radio" name="server-kind" id="server-custom">
+        Custom server
+        <span class="help">(a self-hosted Connect-compatible server on your network)</span>
+      </label>
+      <div id="custom-server-fields" hidden style="margin:6px 0 0 24px">
+        <input id="server-host" type="text" placeholder="hostname or IP" style="width:14em">
+        <input id="server-port" type="number" placeholder="port" value="8080" style="width:6em">
+        <label><input id="server-tls" type="checkbox"> TLS</label>
+      </div>
+    </fieldset>
     <p class="help" id="register-help">
-      Click <strong>Get code</strong>. A one-time code will appear. Visit
-      <a id="connect-link" href="https://connect.prusa3d.com/add" target="_blank" rel="noreferrer">connect.prusa3d.com/add</a>
-      (or scan the QR), sign in, and paste the code. This page will update
+      Click <strong>Get code</strong>. A one-time code will appear. Open
+      <a id="connect-link" href="https://connect.prusa3d.com/add" target="_blank" rel="noreferrer">the server's add-printer page</a>
+      (or scan the QR), sign in, and approve the code. This page will update
       automatically once registration finishes.
     </p>
     <button id="register-go" class="primary">Get code</button>

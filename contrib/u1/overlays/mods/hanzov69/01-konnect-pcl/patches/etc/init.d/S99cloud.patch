@@ -1,0 +1,32 @@
+Teach the cloud provider dispatcher about konnect.
+
+konnect appears as a third option in the Cloud Access dropdown (merged
+in by 26_settings_konnect.yaml). start() delegates to S98konnect, and
+stop() stops it alongside OctoEverywhere — which is what makes provider
+switching correct with the stock settings commands: both the "none" and
+the "octoeverywhere" actions go through S99cloud stop/restart, so
+selecting either one takes konnect down without knowing it exists.
+
+--- a/etc/init.d/S99cloud
++++ b/etc/init.d/S99cloud
+@@ -36,10 +36,13 @@ start() {
+     case "$CLOUD_PROVIDER" in
+         octoeverywhere)
+             start_octoeverywhere
+             ;;
++        konnect)
++            /etc/init.d/S98konnect start
++            ;;
+         *)
+             echo "No cloud is enabled in the extended configuration, not starting any cloud service."
+             exit 0
+             ;;
+     esac
+ }
+@@ -47,5 +50,6 @@
+ stop() {
+     # Stop all cloud services, if any are running.
++    /etc/init.d/S98konnect stop
+     printf "Stopping OctoEverywhere: "
+     if [ -f "$OCTOEVERYWHERE_PIDFILE" ]; then
+         start-stop-daemon -K -p "$OCTOEVERYWHERE_PIDFILE" -s TERM
