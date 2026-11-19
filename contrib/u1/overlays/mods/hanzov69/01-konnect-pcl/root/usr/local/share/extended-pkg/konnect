@@ -7,7 +7,7 @@ PKG_VERSION=0.3.1
 # guaranteed byte-stable, release assets are. scripts/release-u1.sh in
 # the konnect repo builds the asset and prints the checksum.
 PKG_URL="https://github.com/hanzov69/konnect/releases/download/u1-${PKG_VERSION}/konnect-u1-${PKG_VERSION}.zip"
-PKG_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+PKG_SHA256=4c0cfc214ef614cf47060dcd5033953b39dff2f4e2144ef9b053b38a96bb917d
 # The asset unpacks to `konnect-u1-<version>`.
 PKG_PREFIX="konnect-u1"
 
