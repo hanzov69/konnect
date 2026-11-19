@@ -286,8 +286,19 @@ class PCLSession:
                         return  # socket is gone; recv loop will notice
                 continue
 
+            # One item that cannot be rendered must not take the sender
+            # down with it: the recv loop would keep the socket alive
+            # while nothing ever left the printer again.
+            try:
+                payload = item.to_payload() if isinstance(
+                    item, (Telemetry, Event)) else None
+            except Exception:  # noqa: BLE001
+                log.exception("Dropping an unrenderable %s",
+                              type(item).__name__)
+                continue
+
             if isinstance(item, Telemetry):
-                if not self._send_json(item.to_payload()):
+                if not self._send_json(payload):
                     return  # telemetry is periodic — fine to drop one
             elif isinstance(item, Event):
                 # Query commands are answered by their data event alone
@@ -300,7 +311,7 @@ class PCLSession:
                         and item.command_id in self._quiet_accept):
                     self._quiet_accept.discard(item.command_id)
                     continue
-                if not self._send_json(item.to_payload()):
+                if not self._send_json(payload):
                     printer.queue.put(item)  # events must not get lost
                     return
             elif isinstance(item, Register):

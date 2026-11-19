@@ -429,7 +429,7 @@ class Actions:
             # A full INFO rather than a tools-only one: the server takes
             # each INFO as the printer's whole description, and a partial
             # one would blank fields like storages for Buddy dashboards.
-            self.printer.send_info()
+            self.printer.emit_info()
 
     def history_job_changed(self, _moonraker, params: dict) -> None:
         action = params.get("action")

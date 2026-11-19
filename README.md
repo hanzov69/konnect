@@ -171,14 +171,14 @@ curl -fsSL https://raw.githubusercontent.com/hanzov69/konnect/main/scripts/boots
 ```
 
 Env overrides (pin a release, use a fork, relocate the checkout):
-`KONNECT_REF=u1-0.3.1`, `KONNECT_REPO=…`, `KONNECT_DIR=…`.
+`KONNECT_REF=u1-0.3.2`, `KONNECT_REPO=…`, `KONNECT_DIR=…`.
 
 ### Manual install (tarball)
 
 ```sh
 cd ~
-tar -xzf konnect-0.3.1.tar.gz
-mv konnect-0.3.1 konnect    # or however the tarball unpacks
+tar -xzf konnect-0.3.2.tar.gz
+mv konnect-0.3.2 konnect    # or however the tarball unpacks
 ./konnect/scripts/install.sh
 ```
 

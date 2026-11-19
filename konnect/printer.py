@@ -299,7 +299,7 @@ class KonnectPrinter(SDKPrinter):
         self.download_thread.start()
 
         # Send initial INFO so Connect has metadata as soon as we're online.
-        self.send_info()
+        self.emit_info()
         # Trick: force a full telemetry on next tick.
         self.actions.last_telemetry = 0
 
@@ -341,7 +341,7 @@ class KonnectPrinter(SDKPrinter):
             return
         # Re-emit INFO so Connect has current metadata for this token.
         try:
-            self.send_info()
+            self.emit_info()
         except Exception:  # noqa: BLE001
             log.exception("failed to send post-registration INFO")
         if self.camera is not None and self.camera.camera_id:
@@ -409,8 +409,15 @@ class KonnectPrinter(SDKPrinter):
     # (~48KB of base64) with headroom.
     PREVIEW_BYTES_BUDGET = 50000
 
-    def send_info(self, source: Source = Source.FIRMWARE) -> dict[str, Any]:
-        """Emit a full INFO event (printer description) to Connect."""
+    def emit_info(self, source: Source = Source.FIRMWARE) -> dict[str, Any]:
+        """Emit a full, unsolicited INFO event (printer description).
+
+        Not named send_info: that is the SDK's SEND_INFO command handler
+        (``send_info(caller: Command)``), and shadowing it handed the
+        Command object in as ``source`` — the event could not serialize
+        and the PCL sender thread died, after which nothing left the
+        printer (seen on a U1 as PCL's storage and tools never updating).
+        """
         info = self.get_info()
         info["source"] = source
         self.event_cb(**info)

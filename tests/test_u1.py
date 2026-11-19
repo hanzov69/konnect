@@ -37,8 +37,8 @@ class StubPrinter:
     def event_cb(self, *args, **kwargs):
         self.events.append((args, kwargs))
 
-    def send_info(self, source=None):
-        # Mirror KonnectPrinter.send_info: a full INFO built from the
+    def emit_info(self, source=None):
+        # Mirror KonnectPrinter.emit_info: a full INFO built from the
         # per-head tool state, recorded as an event.
         tools = {
             key: {"material": tool.material or "---",
@@ -546,6 +546,75 @@ def test_pinned_server_never_overrides_a_registration():
             assert printer.db.get("connect", "tls") is False
         finally:
             printer.stop_loop()
+
+
+def test_sdk_send_info_handler_is_not_shadowed():
+    """The SDK answers SEND_INFO through Printer.send_info(caller) and
+    konnect once shadowed it with a method of another signature: the
+    Command object became the event's source and the PCL sender died
+    (seen on a U1 as PCL never getting storages or tools)."""
+    import inspect
+    import tempfile
+
+    from prusa.connect.printer import Printer as SDKPrinter
+    from prusa.connect.printer.command import Command as SDKCommand
+    from konnect.config import Config
+    from konnect.printer import KonnectPrinter
+
+    assert KonnectPrinter.send_info is SDKPrinter.send_info
+    assert list(inspect.signature(KonnectPrinter.send_info).parameters) == [
+        "self", "caller",
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config()
+        cfg.local_gcode_path = tmp
+        cfg.log_path = ""
+        printer = KonnectPrinter(cfg)
+        try:
+            cmd = SDKCommand(lambda *a, **k: None)
+            answer = printer.send_info(cmd)
+            assert "tools" in answer and "storages" in answer
+            # The unsolicited full INFO has its own name and a real source.
+            emitted = printer.emit_info()
+            assert hasattr(emitted["source"], "value")
+        finally:
+            printer.stop_loop()
+
+
+def test_pcl_sender_survives_an_unrenderable_item():
+    """A queue item whose payload cannot be rendered is dropped with a
+    log line; the next item still goes out."""
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from prusa.connect.printer.const import Event as EventType, State
+    from prusa.connect.printer.models import Event, Telemetry
+    from konnect.pcl import PCLSession
+
+    from prusa.connect.printer.download import Transfer
+
+    sent = []
+    printer = SimpleNamespace(
+        queue=Queue(), running_loop=True, token="t", transfer=Transfer(),
+        event_cb=lambda *a, **k: None,
+        cfg=SimpleNamespace(local_gcode_path=".", local_fs_name="local"),
+    )
+    session = PCLSession(printer)
+    session.ws = SimpleNamespace(send=lambda text: sent.append(text),
+                                 ping=lambda: None)
+    printer.queue.put(Event(EventType.INFO, "not-a-source"))  # no .value
+    printer.queue.put(Telemetry(State.IDLE, temp_bed=20.0))
+    session._sender_stop.clear()
+    th = threading.Thread(target=session._send_loop, daemon=True)
+    th.start()
+    for _ in range(60):
+        if sent:
+            break
+        time.sleep(0.05)
+    printer.running_loop = False
+    th.join(timeout=3)
+    assert sent and '"temp_bed": 20.0' in sent[0]
 
 
 def test_config_load_accepts_str_path():
