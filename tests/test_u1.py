@@ -856,6 +856,82 @@ def test_set_type_persists_and_is_locked_once_registered():
             printer.stop_loop()
 
 
+def test_factory_serial_and_nozzles_from_product_info():
+    """Snapmaker's Moonraker publishes the factory serial, device name
+    and per-head nozzle sizes under machine.system_info.product_info;
+    the identity defaults to the real serial and the heads carry their
+    nozzle sizes. Vanilla Moonraker yields nothing and generic
+    defaults stay."""
+    import tempfile
+
+    from konnect.util import factory_info, make_fingerprint
+
+    machine_info = {"system_info": {
+        "cpu_info": {"serial_number": "96ef7b56bdbac13a"},
+        "product_info": {
+            "machine_type": "Snapmaker U1", "device_name": "U1-2",
+            "serial_number": "811002606271018658ht",
+            "nozzle_diameter": [0.4, 0.4, "0.6", None],
+            "firmware_version": "2.0.0", "software_version": "2.0.0",
+        },
+    }}
+    info = factory_info(machine_info)
+    assert info["serial_number"] == "811002606271018658HT"
+    assert info["device_name"] == "U1-2"
+    assert info["machine_type"] == "Snapmaker U1"
+    assert info["nozzle_diameter"] == [0.4, 0.4, 0.6, None]
+    assert factory_info({"system_info": {"cpu_info": {}}}) == {}
+    assert factory_info(None) == {}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        printer = _u1_printer(tmp)
+        try:
+            printer.factory = info
+            printer._cpu_serial = "96ef7b56bdbac13a"
+            # Changing the serial before registration re-derives the
+            # fingerprint at once and persists; refused once registered.
+            class DB:
+                data = {}
+                def get(self, *k, default=None): return self.data.get(k[0], default)
+                def set(self, *k, value): self.data[k[0]] = value
+            printer.db = DB()
+            printer.set_serial(" 811002606271018658HT ")
+            assert printer.sn == "811002606271018658HT"
+            assert printer.db.get("serial_number") == "811002606271018658HT"
+            assert printer.fingerprint == make_fingerprint(
+                "811002606271018658HT", "96ef7b56bdbac13a")
+            try:
+                printer.set_serial("")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("empty serial must be refused")
+            printer.token = "T"
+            try:
+                printer.set_serial("OTHER")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("a registered printer keeps its serial")
+
+            # Per-head nozzle sizes reach the tools when save_variables
+            # has none.
+            printer.token = ""
+            printer.actions.extruders = [
+                "extruder", "extruder1", "extruder2", "extruder3"]
+            printer.actions.info = printer.actions.info.__class__(4)
+            printer.actions._set_state({"print_stats": {"state": "standby"}})
+            nozzles = [printer.actions.info.tools[k].nozzle_diameter
+                       for k in "1234"]
+            assert nozzles == [0.4, 0.4, 0.6, None]
+            # An explicit save_variables nozzle still wins.
+            printer.actions._set_state({"save_variables": {"variables": {
+                "nozzle": "0.8"}}})
+            assert printer.actions.info.tools["3"].nozzle_diameter == 0.8
+        finally:
+            printer.stop_loop()
+
+
 def test_config_load_accepts_str_path():
     """`konnect --config <path>` hands a str to Config.load (found on
     the U1: it crashed with 'str' has no attribute 'is_file')."""

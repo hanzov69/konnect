@@ -440,13 +440,19 @@ class Actions:
         """
         new_info = Info(len(self.extruders))
         nozzle = nested_get(params, "save_variables", "variables", "nozzle")
+        # The machine's own per-head nozzle sizes (Snapmaker product_info)
+        # stand in when save_variables has no "nozzle" entry.
+        factory = list(getattr(self.printer, "factory_nozzles", None) or [])
         for index, name in enumerate(self.extruders, start=1):
             head = self._slot_state.get(name, {})
             material = head.get("material")
             if material is None and len(self.extruders) == 1:
                 material = self.telemetry.material
+            nozzle_str = nozzle
+            if not nozzle_str and index - 1 < len(factory) and factory[index - 1]:
+                nozzle_str = str(factory[index - 1])
             new_info.tools[str(index)] = Tool.from_variables(
-                nozzle, material, head.get("color"))
+                nozzle_str, material, head.get("color"))
         info_changed = self.info.update(new_info)
 
         if state_str := nested_get(params, "print_stats", "state"):

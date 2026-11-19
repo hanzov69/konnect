@@ -48,6 +48,39 @@ def make_fingerprint(sn: str, cpu_serial: str) -> str:
     return digest.hexdigest()
 
 
+def factory_info(machine_info: dict | None) -> dict:
+    """What a Moonraker fork publishes about the machine itself.
+
+    Snapmaker's Moonraker adds ``product_info`` to machine.system_info:
+    ``machine_type``, ``serial_number`` (the factory serial, from
+    /oem/printer_data/.lava.sn), ``device_name`` and ``nozzle_diameter``
+    (one per head). Vanilla Moonraker has no such block; an empty dict
+    is returned then, and callers fall back to their generic defaults.
+    """
+    info = nested_get(machine_info or {}, "system_info", "product_info")
+    if not isinstance(info, dict):
+        return {}
+    out: dict = {}
+    for key in ("machine_type", "device_name", "firmware_version"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    sn = info.get("serial_number")
+    if isinstance(sn, str) and sn.strip():
+        out["serial_number"] = sn.strip().upper()
+    nozzles = info.get("nozzle_diameter")
+    if isinstance(nozzles, list):
+        clean = []
+        for item in nozzles:
+            try:
+                clean.append(round(float(item), 2))
+            except (TypeError, ValueError):
+                clean.append(None)
+        if any(n is not None for n in clean):
+            out["nozzle_diameter"] = clean
+    return out
+
+
 def default_serial_number() -> str:
     """Generate a stable default serial number from the primary MAC.
 

@@ -92,7 +92,13 @@
   /* ---- step 2: identity ---------------------------------------------- */
   const fillIdentity = () => {
     $("#sn").value = state.printer.serial_number || "";
-    $("#name").value = state.printer.name || "";
+    // A machine that knows its own serial (Snapmaker's Moonraker
+    // publishes it) gets a one-click way to adopt it.
+    const factory = state.printer.factory_serial;
+    const hint = $("#factory-serial-hint");
+    hint.hidden = !factory || factory === $("#sn").value;
+    if (factory) $("#factory-serial").textContent = factory;
+    $("#name").value = state.printer.name || state.printer.device_name || "";
     $("#location").value = state.printer.location || "";
   };
 
@@ -301,6 +307,10 @@
       }
     }
     gotoIdentity();
+  });
+  $("#use-factory-serial").addEventListener("click", () => {
+    $("#sn").value = state.printer.factory_serial || "";
+    $("#factory-serial-hint").hidden = true;
   });
   $("#identity-back").addEventListener("click", () => {
     // If there's only one supported type the picker was skipped —

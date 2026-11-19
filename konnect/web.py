@@ -422,6 +422,7 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
     # ---- identity ----
     @app.route("/printer", methods=["GET"])
     def get_printer():  # noqa: ANN202
+        factory = getattr(printer, "factory", {}) or {}
         return jsonify({
             "serial_number": printer.sn,
             "fingerprint": printer.fingerprint,
@@ -429,6 +430,11 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
             "firmware": printer.firmware,
             "name": printer.db.get("printer_name") or None,
             "location": printer.db.get("printer_location") or None,
+            # What the machine says about itself, when its Moonraker
+            # publishes it (Snapmaker): offered in the identity step.
+            "factory_serial": factory.get("serial_number"),
+            "device_name": factory.get("device_name"),
+            "machine_type": factory.get("machine_type"),
         })
 
     @app.route("/printer", methods=["POST"])
@@ -464,8 +470,12 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
                 )
             if printer.type is not member:
                 printer.set_type(member)
-        if sn := payload.get("serial_number"):
-            printer.db.set("serial_number", value=sn)
+        if sn := (payload.get("serial_number") or "").strip():
+            if sn != printer.sn:
+                try:
+                    printer.set_serial(sn)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), HTTPStatus.BAD_REQUEST
         if name := payload.get("name"):
             printer.db.set("printer_name", value=name)
         if location := payload.get("location"):

@@ -32,6 +32,7 @@ from .db import Database
 from .moonraker import Moonraker
 from . import encrypted_download, modern_fs, printer_types
 from .util import (
+    factory_info,
     InfinityThread,
     default_serial_number,
     make_fingerprint,
@@ -130,6 +131,9 @@ class KonnectPrinter(SDKPrinter):
         # that only make sense there (inline upload actually works,
         # SET_TOKEN rotation, raw G-code frames).
         self.pcl = None
+        # Filled from Moonraker's machine.system_info at start().
+        self.factory: dict[str, Any] = {}
+        self._cpu_serial = ""
         if config.backend == "pcl":
             from .pcl import PCLSession
             self.pcl = PCLSession(self)
@@ -258,12 +262,6 @@ class KonnectPrinter(SDKPrinter):
 
         self._apply_pinned_server()
 
-        # Serial number: user-supplied via UI, else MAC-derived default.
-        sn = self.db.get("serial_number") or default_serial_number()
-        if not self.db.get("serial_number"):
-            self.db.set("serial_number", value=sn)
-        self.sn = sn
-
         # Wait for klippy to provide its system info so we can set firmware
         # version + fingerprint (SDK requires both before registration).
         machine_info = None
@@ -275,16 +273,30 @@ class KonnectPrinter(SDKPrinter):
                 continue
             machine_info = self.moonraker("machine.system_info")
 
+        # What the machine knows about itself. Snapmaker's Moonraker
+        # publishes product_info (factory serial, device name, nozzle
+        # diameter per head); vanilla Moonraker has none of it.
+        self.factory = factory_info(machine_info)
+
+        # Serial number: user-supplied via UI, else the factory serial
+        # when the machine has one, else a MAC-derived default.
+        sn = (self.db.get("serial_number")
+              or self.factory.get("serial_number")
+              or default_serial_number())
+        if not self.db.get("serial_number"):
+            self.db.set("serial_number", value=sn)
+        self.sn = sn
+
         # Firmware string reported to Connect. Operator override in
         # konnect.cfg wins; otherwise use the type-appropriate default
         # (see _FIRMWARE_BY_TYPE in config.py). Falls back to Klippy's
         # OS distro version only when neither is available.
         self.firmware = self._resolve_firmware(machine_info)
-        cpu_serial = nested_get(
+        self._cpu_serial = nested_get(
             machine_info, "system_info", "cpu_info", "serial_number",
             default="",
         )
-        self.fingerprint = make_fingerprint(self.sn, cpu_serial)
+        self.fingerprint = make_fingerprint(self.sn, self._cpu_serial)
 
         # Apply stored Connect connection, if registered.
         server_url = self._current_server_url()
@@ -378,6 +390,33 @@ class KonnectPrinter(SDKPrinter):
             self.pcl is not None and self.type is not None
             and self.type.name in printer_types.CUSTOM_SERVER_ONLY
         )
+
+    @property
+    def factory_nozzles(self) -> list[float]:
+        """Nozzle diameter per head as the machine reports it (Snapmaker
+        product_info), [] when unknown."""
+        return list(self.factory.get("nozzle_diameter") or [])
+
+    def set_serial(self, sn: str) -> None:
+        """Change the serial number before registration.
+
+        The fingerprint Connect recognises the printer by is derived from
+        the serial, so it is recomputed here and the new identity is in
+        force at once — the next registration carries it. Refused once
+        registered: a token belongs to one identity.
+        """
+        sn = sn.strip()
+        if not sn:
+            raise ValueError("Serial number must not be empty")
+        if self.token:
+            raise RuntimeError("Unregister before changing the serial number")
+        self.db.set("serial_number", value=sn)
+        # The SDK's sn / fingerprint setters refuse a second assignment;
+        # set the private attributes the way the SDK itself does.
+        self._Printer__sn = sn
+        self._Printer__fingerprint = make_fingerprint(
+            sn, getattr(self, "_cpu_serial", ""))
+        log.info("Serial number set to %s (fingerprint %s…)", sn, self.fingerprint[:12])
 
     def set_type(self, member: PrinterType) -> None:
         """Switch the advertised printer type before registration.
