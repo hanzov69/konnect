@@ -69,8 +69,11 @@ gh release create u1-<v> dist/konnect-u1-<v>.zip
 3. Open `http://<printer-ip>/konnect/`, click *Get code*, then approve
    the printer on your PCL server's *Add a printer* page.
 
-Per-head temperatures of all four toolheads are reported the Buddy way
-(`slot` telemetry); uploads from PCL's dashboard land in
+Per-head temperatures and loaded materials of all four toolheads are
+reported the Buddy way (`slot` telemetry + INFO `tools`). Material comes
+from the firmware's `print_task_config` — what the touchscreen shows per
+head, whether it came from an RFID spool or was entered by hand; an
+empty head shows as `---`. Uploads from PCL's dashboard land in
 `/home/lava/printer_data/gcodes` over the WebSocket inline transfer.
 
 Camera: PCL pulls streams itself. Point a camera resource on the server

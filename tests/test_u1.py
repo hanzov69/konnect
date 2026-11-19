@@ -37,6 +37,18 @@ class StubPrinter:
     def event_cb(self, *args, **kwargs):
         self.events.append((args, kwargs))
 
+    def send_info(self, source=None):
+        # Mirror KonnectPrinter.send_info: a full INFO built from the
+        # per-head tool state, recorded as an event.
+        tools = {
+            key: {"material": tool.material or "---",
+                  "nozzle_diameter": tool.nozzle_diameter or 0.4}
+            for key, tool in self.actions.info.tools.items()
+        }
+        info = {"event": "INFO", "tools": tools, "slots": len(tools)}
+        self.events.append(((), info))
+        return info
+
 
 class StubMoonraker:
     connected = True
@@ -61,8 +73,18 @@ U1_OBJECTS = [
     "extruder3", "heater_bed", "print_stats", "virtual_sdcard",
 ]
 
+# print_task_config as the paxx12 2.0.0 firmware reports it: parallel
+# arrays indexed by physical head. Head 2 (extruder1) is empty.
+U1_FILAMENT = {
+    "filament_type": ["PLA", "NONE", "PLA", "PETG"],
+    "filament_exist": [True, False, True, True],
+    "filament_vendor": ["Snapmaker", "NONE", "Generic", "Generic"],
+    "filament_sub_type": ["Basic", "NONE", "Basic", ""],
+}
+
 U1_STATUS = {
     "toolhead": {"position": [1, 2, 3], "extruder": "extruder2"},
+    "print_task_config": U1_FILAMENT,
     "extruder": {"temperature": 25.04, "target": 0},
     "extruder1": {"temperature": 26.17, "target": 0},
     "extruder2": {"temperature": 215.43, "target": 220},
@@ -121,6 +143,113 @@ def test_partial_update_keeps_other_heads():
     assert sent["slot"]["1"]["temp"] == 199.9
     assert sent["slot"]["3"]["temp"] == 215.4  # retained from before
     assert sent["temp_nozzle"] == 199.9  # followed the picker
+
+
+def _info_events(printer):
+    return [kw for _a, kw in printer.events if kw.get("event") == "INFO"]
+
+
+def test_per_head_material_from_print_task_config():
+    """Observed on both U1s: every tool reported material '---' because
+    konnect only knew the save_variables.loaded_filament convention. The
+    U1 publishes per-head filament on print_task_config."""
+    printer, actions = make_actions()
+    moonraker = StubMoonraker(U1_OBJECTS, U1_STATUS)
+    actions.subscribe(moonraker, {})
+
+    sent = printer.telemetry_calls[-1]
+    slot = sent["slot"]
+    assert slot["1"]["material"] == "PLA"
+    assert slot["2"]["material"] == "---"  # filament_exist false
+    assert slot["3"]["material"] == "PLA"
+    assert slot["4"]["material"] == "PETG"
+    assert slot["2"]["temp"] == 26.2  # temps still ride along
+    # Top-level material follows the picked head (extruder2 -> slot 3).
+    assert sent["material"] == "PLA"
+
+    infos = _info_events(printer)
+    assert infos, "a material change must re-announce the tools"
+    tools = infos[-1]["tools"]
+    assert infos[-1]["slots"] == 4
+    assert [tools[k]["material"] for k in "1234"] == [
+        "PLA", "---", "PLA", "PETG",
+    ]
+
+
+def test_filament_change_and_swap_update_material():
+    printer, actions = make_actions()
+    moonraker = StubMoonraker(U1_OBJECTS, U1_STATUS)
+    actions.subscribe(moonraker, {})
+    printer.telemetry_calls.clear()
+    printer.events.clear()
+
+    # A spool is loaded into head 2: Klipper sends the changed arrays
+    # only (status updates are diffs; filament_exist may lag type).
+    actions.send_telemetry(moonraker, {
+        "print_task_config": {
+            "filament_type": ["PLA", "ABS", "PLA", "PETG"],
+        },
+    })
+    # Type known but filament_exist still false -> stays empty.
+    assert printer.telemetry_calls == [] or \
+        printer.telemetry_calls[-1].get("slot", {}).get("2", {}).get(
+            "material", "---") == "---"
+    actions.send_telemetry(moonraker, {
+        "print_task_config": {
+            "filament_exist": [True, True, True, True],
+        },
+    })
+    sent = printer.telemetry_calls[-1]
+    assert sent["slot"]["2"]["material"] == "ABS"
+    assert sent["slot"]["4"]["material"] == "PETG"  # retained
+    assert _info_events(printer)[-1]["tools"]["2"]["material"] == "ABS"
+
+    # Picking another head moves the top-level material with it.
+    printer.telemetry_calls.clear()
+    actions.send_telemetry(moonraker, {"toolhead": {"extruder": "extruder3"}})
+    sent = printer.telemetry_calls[-1]
+    assert sent["material"] == "PETG"
+    assert sent["slot"]["active"] == 4
+
+    # Unloading head 4 reports the empty-slot spelling.
+    actions.send_telemetry(moonraker, {
+        "print_task_config": {
+            "filament_type": ["PLA", "ABS", "PLA", "NONE"],
+            "filament_exist": [True, True, True, False],
+        },
+    })
+    sent = printer.telemetry_calls[-1]
+    assert sent["slot"]["4"]["material"] == "---"
+    assert sent["material"] == "---"
+    assert _info_events(printer)[-1]["tools"]["4"]["material"] == "---"
+
+
+def test_single_tool_material_from_save_variables():
+    """Generic Klipper keeps the HT90 convention: one loaded_filament
+    entry in save_variables feeds material and the single tool."""
+    printer, actions = make_actions()
+    moonraker = StubMoonraker(
+        ["toolhead", "extruder", "heater_bed", "print_stats",
+         "save_variables"],
+        {
+            "extruder": {"temperature": 24.9, "target": 0},
+            "print_stats": {"state": "standby"},
+            "save_variables": {"variables": {
+                "loaded_filament": "PETG", "nozzle": "0.6",
+            }},
+        },
+    )
+    actions.subscribe(moonraker, {})
+    sent = printer.telemetry_calls[-1]
+    assert sent["material"] == "PETG"
+    assert sent.get("slot") is None
+    # The INFO follows a tick later (material is read from the
+    # previous telemetry pass on single-tool printers, as before).
+    actions.send_telemetry(moonraker, {})
+    tools = _info_events(printer)[-1]["tools"]
+    assert list(tools) == ["1"]
+    assert tools["1"]["material"] == "PETG"
+    assert tools["1"]["nozzle_diameter"] == 0.6
 
 
 def test_single_tool_has_no_slot():
@@ -358,6 +487,65 @@ def test_extract_thumbnails_fallback():
         assert sorted(thumbs) == ["300x300", "48x48"]  # QOI skipped
         assert thumbs["48x48"] == small.encode()
         assert thumbs["300x300"] == big.encode()
+
+
+def test_pinned_server_never_overrides_a_registration():
+    """Seen on a U1: registered via the UI with PCL at :8080, while
+    konnect.cfg (seeded from extended2.cfg) pinned a stale :8823. Every
+    restart rewrote the stored server to the pin and konnect dialed a
+    dead address. A pin is only the default for a fresh registration."""
+    import tempfile
+
+    from konnect.config import Config
+    from konnect.printer import KonnectPrinter
+
+    class FakeDB:
+        def __init__(self, data):
+            self.data = data
+
+        def get(self, *keys, default=None):
+            node = self.data
+            for key in keys:
+                if not isinstance(node, dict) or key not in node:
+                    return default
+                node = node[key]
+            return node
+
+        def set(self, *keys, value):
+            node = self.data
+            for key in keys[:-1]:
+                node = node.setdefault(key, {})
+            node[keys[-1]] = value
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config()
+        cfg.backend = "pcl"
+        cfg.pcl_host = "192.168.95.23"
+        cfg.pcl_port = 8823
+        cfg.pcl_tls = False
+        cfg.local_gcode_path = tmp
+        cfg.log_path = ""
+        printer = KonnectPrinter(cfg)
+        try:
+            # Registered elsewhere: the pin must leave the stored server alone.
+            printer.db = FakeDB({"connect": {
+                "hostname": "192.168.95.111", "tls": False, "port": 8080,
+                "token": "TOKEN",
+            }})
+            printer._apply_pinned_server()
+            assert printer.db.get("connect", "hostname") == "192.168.95.111"
+            assert printer.db.get("connect", "port") == 8080
+            # Not registered: the pin is the default.
+            printer.db = FakeDB({"connect": {
+                "hostname": "connect.prusa3d.com", "tls": True, "port": 443,
+                "token": "",
+            }})
+            printer._apply_pinned_server()
+            assert printer.db.get("connect", "hostname") == "192.168.95.23"
+            assert printer.db.get("connect", "port") == 8823
+            assert printer.db.get("connect", "tls") is False
+        finally:
+            printer.stop_loop()
 
 
 def test_config_load_accepts_str_path():

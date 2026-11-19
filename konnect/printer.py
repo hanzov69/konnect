@@ -255,18 +255,7 @@ class KonnectPrinter(SDKPrinter):
         # Wait for moonrakerdb to be reachable and seed our settings cache.
         self.db.load()
 
-        # PCL backend: the server address is an operator choice in
-        # konnect.cfg (the onboarding SPA posts the cloud's address), so
-        # it wins over whatever the db holds.
-        if self.pcl is not None and self.cfg.pcl_host:
-            stored = (
-                self.db.get("connect", "hostname"),
-                self.db.get("connect", "tls"),
-                int(self.db.get("connect", "port") or 0),
-            )
-            wanted = (self.cfg.pcl_host, self.cfg.pcl_tls, self.cfg.pcl_port)
-            if stored != wanted:
-                self.update_connect_settings(*wanted)
+        self._apply_pinned_server()
 
         # Serial number: user-supplied via UI, else MAC-derived default.
         sn = self.db.get("serial_number") or default_serial_number()
@@ -310,9 +299,7 @@ class KonnectPrinter(SDKPrinter):
         self.download_thread.start()
 
         # Send initial INFO so Connect has metadata as soon as we're online.
-        info = self.get_info()
-        info["source"] = Source.FIRMWARE
-        self.event_cb(**info)
+        self.send_info()
         # Trick: force a full telemetry on next tick.
         self.actions.last_telemetry = 0
 
@@ -354,13 +341,40 @@ class KonnectPrinter(SDKPrinter):
             return
         # Re-emit INFO so Connect has current metadata for this token.
         try:
-            info = self.get_info()
-            info["source"] = Source.FIRMWARE
-            self.event_cb(**info)
+            self.send_info()
         except Exception:  # noqa: BLE001
             log.exception("failed to send post-registration INFO")
         if self.camera is not None and self.camera.camera_id:
             self.camera_controller.register_camera(self.camera.camera_id)
+
+    def _apply_pinned_server(self) -> None:
+        """Reconcile an operator-pinned PCL address with the stored one.
+
+        konnect.cfg may pin the server (on the U1, konnectd seeds it from
+        extended2.cfg). The pin is the default for a *fresh* registration.
+        Once registered, the token belongs to the server that issued it,
+        so the address stored at registration wins — a stale pin used to
+        redirect a registered printer at a dead address on every restart
+        (seen on a U1: registered with :8080 in the UI, pinned :8823).
+        """
+        if self.pcl is None or not self.cfg.pcl_host:
+            return
+        stored = (
+            self.db.get("connect", "hostname"),
+            bool(self.db.get("connect", "tls")),
+            int(self.db.get("connect", "port") or 0),
+        )
+        wanted = (self.cfg.pcl_host, bool(self.cfg.pcl_tls), int(self.cfg.pcl_port or 0))
+        if stored == wanted:
+            return
+        if self.db.get("connect", "token"):
+            log.warning(
+                "konnect.cfg pins %s:%s but this printer is registered with "
+                "%s:%s — keeping the registered server (unregister to move)",
+                wanted[0], wanted[2], stored[0], stored[2],
+            )
+            return
+        self.update_connect_settings(*wanted)
 
     def _current_server_url(self) -> str:
         hostname = self.db.get("connect", "hostname", default="connect.prusa3d.com")
@@ -395,6 +409,13 @@ class KonnectPrinter(SDKPrinter):
     # (~48KB of base64) with headroom.
     PREVIEW_BYTES_BUDGET = 50000
 
+    def send_info(self, source: Source = Source.FIRMWARE) -> dict[str, Any]:
+        """Emit a full INFO event (printer description) to Connect."""
+        info = self.get_info()
+        info["source"] = source
+        self.event_cb(**info)
+        return info
+
     def get_info(self) -> dict[str, Any]:
         info = super().get_info()
         info["storages"] = modern_fs.build_storages(
@@ -415,32 +436,36 @@ class KonnectPrinter(SDKPrinter):
             info["printer_type"] = str(self.type)
         # Nozzle + tools. Connect's modern dashboards gate several
         # UI affordances (upload, start print) on having a valid
-        # `tools` object describing at least one slot. We emit a
-        # single slot matching Buddy's MK4S layout. Values come
-        # from moonraker's save_variables if available, else
-        # reasonable defaults.
-        material = self.actions.info.tool.material if (
-            hasattr(self, "actions") and self.actions.info.tool.material
-        ) else "---"
-        nozzle_d = self.actions.info.tool.nozzle_diameter if (
-            hasattr(self, "actions") and self.actions.info.tool.nozzle_diameter
-        ) else 0.4
-        info["nozzle_diameter"] = nozzle_d
-        # One tool entry per detected extruder — a toolchanger (e.g. the
-        # 4-head Snapmaker U1 advertising as a Prusa XL) gets all of its
-        # heads in the dashboard's tool strip.
+        # `tools` object describing at least one slot, laid out the
+        # Buddy way. One entry per detected extruder — a toolchanger
+        # (the 4-head Snapmaker U1 advertising as a Prusa XL) gets all
+        # of its heads in the dashboard's tool strip, each with its own
+        # loaded material. Values come from the telemetry pipeline
+        # (save_variables on generic Klipper, print_task_config on the
+        # U1); "---" is Buddy's spelling of an empty slot.
         tool_count = 1
+        tools: dict[str, Any] = {}
+        active = 1
         if hasattr(self, "actions"):
             tool_count = max(1, len(self.actions.extruders))
-        info["tools"] = {
-            str(index): {
-                "nozzle_diameter": nozzle_d,
+            tools = self.actions.info.tools
+            try:
+                active = self.actions.extruders.index(
+                    self.actions._active_extruder) + 1
+            except ValueError:
+                active = 1
+        info["tools"] = {}
+        for index in range(1, tool_count + 1):
+            tool = tools.get(str(index))
+            info["tools"][str(index)] = {
+                "nozzle_diameter": (tool and tool.nozzle_diameter) or 0.4,
                 "high_flow": False,
                 "hardened": False,
-                "material": material,
+                "material": (tool and tool.material) or "---",
             }
-            for index in range(1, tool_count + 1)
-        }
+        # Top-level nozzle is the picked head's, as Buddy reports it.
+        picked = info["tools"].get(str(active)) or info["tools"]["1"]
+        info["nozzle_diameter"] = picked["nozzle_diameter"]
         if tool_count > 1:
             info["slots"] = tool_count
         return info

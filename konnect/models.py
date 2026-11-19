@@ -163,19 +163,37 @@ class Job:
 
 
 class Info:
-    """INFO-event payload — optional extras beyond what the SDK sends."""
-    tool: Tool
+    """INFO-event payload — optional extras beyond what the SDK sends.
 
-    def __init__(self):
-        self.tool = Tool()
+    One Tool per head, keyed the Buddy way ("1".."n"). Single-tool
+    printers have just "1"; a toolchanger (Snapmaker U1) has one entry
+    per detected extruder.
+    """
+    tools: dict[str, Tool]
+
+    def __init__(self, count: int = 1):
+        self.tools = {str(i): Tool() for i in range(1, max(1, count) + 1)}
+
+    @property
+    def tool(self) -> Tool:
+        """The first head — kept for single-tool callers."""
+        return self.tools["1"]
 
     def update(self, other: "Info") -> bool:
-        return self.tool.update(other.tool)
+        diff = False
+        for key, tool in other.tools.items():
+            mine = self.tools.get(key)
+            if mine is None:
+                self.tools[key] = tool
+                diff = True
+            elif mine.update(tool):
+                diff = True
+        return diff
 
     def data(self, source: Source = Source.FIRMWARE) -> dict[str, Any]:
         return {
             "source": source,
             "event": Event.INFO,
-            "tools": {"1": self.tool.data()},
-            "slots": 1,
+            "tools": {key: tool.data() for key, tool in self.tools.items()},
+            "slots": len(self.tools),
         }

@@ -374,10 +374,7 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
     def post_resend_info():  # noqa: ANN202
         """Force a fresh INFO event to Connect. Useful if Connect's
         cached view of the printer (files list, metadata) has drifted."""
-        from prusa.connect.printer.const import Source
-        info = printer.get_info()
-        info["source"] = Source.FIRMWARE
-        printer.event_cb(**info)
+        info = printer.send_info()
         return jsonify({"ok": True, "file_count": _count_files(info.get("files"))})
 
     def _count_files(node):
