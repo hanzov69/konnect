@@ -109,6 +109,10 @@ pcl_tls = false
 printer_type = XL
 # Forward server-sent raw G-code frames to Klipper (default true):
 # remote_gcode = false
+# Folders/files under the gcodes directory Connect never sees (default:
+# Klipper's calibration output). Shell-style patterns, relative to the
+# gcodes root, comma-separated:
+# hidden_paths = shaper_calibrate, calibration_data
 # Debug: log every WebSocket frame to /tmp/konnect_ws.log:
 # ws_spy = true
 ```

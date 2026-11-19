@@ -606,6 +606,7 @@ class KonnectPrinter(SDKPrinter):
             self.cfg.local_gcode_path,
             self._MODERN_MOUNTPOINT,
             raw,
+            hidden=self.cfg.hidden_patterns,
         )
         if data is None:
             raise RuntimeError(f"File not found: {command.kwargs.get('path')}")

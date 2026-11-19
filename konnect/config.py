@@ -77,6 +77,13 @@ class Config:
     web_port: int = 7130
     local_gcode_path: str = str(Path.home() / "printer_data" / "gcodes")
     local_fs_name: str = "local"
+    # Entries under local_gcode_path that Connect never gets to see:
+    # comma-separated shell-style patterns matched against the path
+    # relative to the gcodes root (so "shaper_calibrate" hides that
+    # top-level folder and everything in it; "*/*.csv" would hide CSVs
+    # one level down). Klipper tooling drops its calibration output in
+    # gcodes, and none of it means anything to a Connect dashboard.
+    hidden_paths: str = "shaper_calibrate, calibration_data"
     crowsnest_config: str = str(
         Path.home() / "printer_data" / "config" / "crowsnest.conf"
     )
@@ -150,6 +157,7 @@ class Config:
             section.get("local_gcode_path", self.local_gcode_path),
         )
         self.local_fs_name = section.get("local_fs_name", self.local_fs_name)
+        self.hidden_paths = section.get("hidden_paths", self.hidden_paths)
         self.crowsnest_config = _expand(
             section.get("crowsnest_config", self.crowsnest_config),
         )
@@ -160,6 +168,15 @@ class Config:
         self.firmware_version = section.get(
             "firmware_version", self.firmware_version,
         ).strip()
+
+    @property
+    def hidden_patterns(self) -> list[str]:
+        """``hidden_paths`` split into patterns, blanks dropped."""
+        return [
+            pat.strip().strip("/")
+            for pat in self.hidden_paths.split(",")
+            if pat.strip().strip("/")
+        ]
 
     def effective_firmware(self) -> str:
         """Return the firmware string to report to Connect.

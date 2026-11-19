@@ -617,6 +617,51 @@ def test_pcl_sender_survives_an_unrenderable_item():
     assert sent and '"temp_bed": 20.0' in sent[0]
 
 
+def test_hidden_paths_are_kept_from_listings():
+    """Klipper tooling drops shaper_calibrate / calibration_data into
+    gcodes; they mean nothing on a Connect dashboard. Hidden patterns
+    leave listings and answer as missing when asked for directly."""
+    import tempfile
+
+    from konnect import modern_fs
+    from konnect.config import Config
+
+    cfg = Config()
+    assert cfg.hidden_patterns == ["shaper_calibrate", "calibration_data"]
+    cfg.hidden_paths = " shaper_calibrate/,, calibration_data, logs/*.csv "
+    assert cfg.hidden_patterns == [
+        "shaper_calibrate", "calibration_data", "logs/*.csv",
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "part.gcode").write_text("G28\n")
+        (root / "shaper_calibrate").mkdir()
+        (root / "shaper_calibrate" / "calibration_data_x.csv").write_text("x")
+        (root / "calibration_data").mkdir()
+        (root / "logs").mkdir()
+        (root / "logs" / "a.csv").write_text("x")
+        (root / "logs" / "keep.gcode").write_text("G28\n")
+        hidden = cfg.hidden_patterns
+
+        listing = modern_fs.file_info(root, "/usb", "/usb", hidden=hidden)
+        assert [c["name"] for c in listing["children"]] == ["logs", "part.gcode"]
+        # A hidden folder, and anything in it, is "not there" when asked.
+        assert modern_fs.file_info(
+            root, "/usb", "/usb/shaper_calibrate", hidden=hidden) is None
+        assert modern_fs.file_info(
+            root, "/usb", "/usb/shaper_calibrate/calibration_data_x.csv",
+            hidden=hidden) is None
+        # A nested pattern hides just what it names.
+        logs = modern_fs.file_info(root, "/usb", "/usb/logs", hidden=hidden)
+        assert [c["name"] for c in logs["children"]] == ["keep.gcode"]
+        # No patterns: everything is listed, as before.
+        listing = modern_fs.file_info(root, "/usb", "/usb")
+        assert [c["name"] for c in listing["children"]] == [
+            "calibration_data", "logs", "part.gcode", "shaper_calibrate",
+        ]
+
+
 def test_config_load_accepts_str_path():
     """`konnect --config <path>` hands a str to Config.load (found on
     the U1: it crashed with 'str' has no attribute 'is_file')."""

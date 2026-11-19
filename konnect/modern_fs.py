@@ -25,10 +25,11 @@ Schema references:
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Iterable, Any
 
 # Match Buddy's filename_type.cpp `file_type_by_ext`.
 _PRINTABLE_EXTS: tuple[str, ...] = (
@@ -167,10 +168,28 @@ def _resolve_under(
     return root.joinpath(*parts) if parts else root
 
 
+def is_hidden(rel_path: str, patterns: Iterable[str]) -> bool:
+    """Whether a path relative to the gcodes root is kept from Connect.
+
+    A pattern matches the relative path or any of its leading
+    directories, so hiding a folder hides everything inside it.
+    """
+    parts = [p for p in rel_path.strip("/").split("/") if p]
+    if not parts:
+        return False
+    prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+    return any(
+        fnmatch.fnmatchcase(prefix, pattern)
+        for pattern in patterns
+        for prefix in prefixes
+    )
+
+
 def file_info(
     root: str | os.PathLike,
     mountpoint: str,
     req_path: str,
+    hidden: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Build FILE_INFO response data for ``SEND_FILE_INFO path=<req_path>``.
 
@@ -178,18 +197,25 @@ def file_info(
     (``{"source":..., "event": Event.FILE_INFO, **file_info_data}``),
     or ``None`` if the path doesn't resolve to anything readable —
     the caller should raise an error in that case so Connect receives
-    a proper rejection rather than a silent miss.
+    a proper rejection rather than a silent miss. ``hidden`` patterns
+    (see :func:`is_hidden`) are left out of listings and answered as
+    missing when asked for directly.
     """
     root_p = Path(root)
+    hidden = tuple(hidden)
     norm = req_path.rstrip("/") or mountpoint
 
     # The root of the storage has no "tail" — Connect asks for the
     # mountpoint verbatim, e.g. req_path == "/usb".
     if norm == mountpoint:
         target = root_p
+        rel = ""
     else:
         target = _resolve_under(root_p, mountpoint, req_path)
+        rel = norm[len(mountpoint):].strip("/")
     if target is None or not target.exists():
+        return None
+    if hidden and is_hidden(rel, hidden):
         return None
 
     try:
@@ -206,6 +232,8 @@ def file_info(
         for ent in entries:
             # Hide dot-files, matching Buddy's DirRenderer.
             if ent.name.startswith("."):
+                continue
+            if hidden and is_hidden(f"{rel}/{ent.name}" if rel else ent.name, hidden):
                 continue
             try:
                 cst = ent.stat()
