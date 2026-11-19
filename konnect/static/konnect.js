@@ -290,14 +290,15 @@
   });
 
   $("#type-next").addEventListener("click", async () => {
-    // printer_type is in konnect.cfg — we advise a restart if changed.
+    // The choice takes effect at once and is saved to konnect.cfg.
     if (state.selectedType && state.selectedType !== state.printer.printer_type) {
-      flashError(
-        "Selected type differs from konnect.cfg. Update " +
-        "~/printer_data/config/konnect.cfg: printer_type = " +
-        state.selectedType + " then restart konnect.service. " +
-        "Continuing with the current value.",
-      );
+      try {
+        await api("POST", "/printer", { printer_type: state.selectedType });
+        state.printer = await api("GET", "/printer");
+      } catch (e) {
+        flashError(e.message);
+        return;
+      }
     }
     gotoIdentity();
   });

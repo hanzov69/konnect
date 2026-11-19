@@ -21,11 +21,13 @@
   <section id="step-type" class="step" hidden>
     <h2>1. Choose your printer type</h2>
     <p class="help">
-      Prusa Connect's SDK does not expose a "generic Klipper" type — every
-      printer must advertise as one of Prusa's own. This choice affects
-      which UI Connect shows you, but does <em>not</em> require real Prusa
-      hardware. You can safely pick the profile that most closely matches
-      your printer.
+      The official Prusa Connect has no "generic Klipper" type — there,
+      every printer must advertise as one of Prusa's own. This choice
+      affects which UI Connect shows you, but does <em>not</em> require
+      real Prusa hardware. A self-hosted server also admits a printer
+      under its own name: on a Snapmaker U1, pick the native profile
+      unless you specifically want Prusa XL emulation. The choice is
+      saved to konnect.cfg.
     </p>
     <div id="type-list" class="type-list"></div>
     <button id="type-next" class="primary" disabled>Continue</button>

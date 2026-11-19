@@ -4,8 +4,9 @@ A composable mod for
 [SnapmakerU1-Extended-Firmware](https://github.com/paxx12-snapmaker-u1/SnapmakerU1-Extended-Firmware)
 that puts **Konnect** on the U1 itself:
 the printer registers with your self-hosted PCL server over the xBuddy
-WebSocket protocol and shows up there as a Prusa XL-style toolchanger
-with all four heads.
+WebSocket protocol and shows up there as a **Snapmaker U1** with all
+four heads, their loaded materials and colours, and its real firmware
+version (Prusa XL emulation remains available in the onboarding page).
 
 ## What the mod installs
 
@@ -82,8 +83,11 @@ at the U1's camera snapshot endpoint (see the firmware's
 
 ## Notes
 
-- `printer_type = XL` is seeded because the XL is PCL's toolchanger
-  profile; konnect auto-detects the U1's `extruder`…`extruder3`.
+- `printer_type = U1` is seeded: PCL has no profile for it, so it runs
+  on the xBuddy driver's baseline capabilities with a generic icon, but
+  it shows the right head count, per-head material + colour and the real
+  firmware. Pick `XL` in the onboarding page for Prusa XL emulation
+  instead. konnect auto-detects the U1's `extruder`…`extruder3`.
 - The mod never touches stock files — it is all new `root/` files, so
   it composes cleanly with other mods and survives rebases onto new
   firmware releases.

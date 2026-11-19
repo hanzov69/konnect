@@ -17,6 +17,7 @@ from prusa.connect.printer import Printer as SDKPrinter
 from prusa.connect.printer.camera import Camera
 from prusa.connect.printer.command import Command as SDKCommand
 from prusa.connect.printer.const import (
+    PrinterType,
     Command,
     Event,
     Source,
@@ -29,7 +30,7 @@ from .camera import CrowsnestDriver
 from .config import Config
 from .db import Database
 from .moonraker import Moonraker
-from . import encrypted_download, modern_fs
+from . import encrypted_download, modern_fs, printer_types
 from .util import (
     InfinityThread,
     default_serial_number,
@@ -278,10 +279,7 @@ class KonnectPrinter(SDKPrinter):
         # konnect.cfg wins; otherwise use the type-appropriate default
         # (see _FIRMWARE_BY_TYPE in config.py). Falls back to Klippy's
         # OS distro version only when neither is available.
-        self.firmware = self.cfg.effective_firmware() or nested_get(
-            machine_info, "system_info", "distribution", "version",
-            default="klipper",
-        )
+        self.firmware = self._resolve_firmware(machine_info)
         cpu_serial = nested_get(
             machine_info, "system_info", "cpu_info", "serial_number",
             default="",
@@ -346,6 +344,58 @@ class KonnectPrinter(SDKPrinter):
             log.exception("failed to send post-registration INFO")
         if self.camera is not None and self.camera.camera_id:
             self.camera_controller.register_camera(self.camera.camera_id)
+
+    def _resolve_firmware(self, machine_info: dict | None = None) -> str:
+        """The firmware string reported to Connect.
+
+        An operator override or the type's Buddy-looking default wins
+        (a Prusa profile is gated on a plausible version). A type with
+        no such default — the native U1 profile — reports the machine's
+        real firmware: Klipper's software_version, which on the U1 is
+        the firmware release (e.g. 2.0.0-paxx12-24). Klippy's OS version
+        is the last resort.
+        """
+        if firmware := self.cfg.effective_firmware():
+            return firmware
+        try:
+            info = self.moonraker("printer.info", timeout=2.0) or {}
+        except Exception:  # noqa: BLE001
+            info = {}
+        if version := str(info.get("software_version") or "").strip():
+            return version
+        return nested_get(
+            machine_info or {}, "system_info", "distribution", "version",
+            default="klipper",
+        )
+
+    @property
+    def tree_tools(self) -> bool:
+        """Report tools in the tree shape (heads from 0, material with
+        colour) rather than Buddy's numbered slots. The native U1
+        profile on a self-hosted server; Prusa profiles keep the shape
+        their dashboards were written for."""
+        return (
+            self.pcl is not None and self.type is not None
+            and self.type.name in printer_types.CUSTOM_SERVER_ONLY
+        )
+
+    def set_type(self, member: PrinterType) -> None:
+        """Switch the advertised printer type before registration.
+
+        The SDK's setter refuses a second assignment, so the private
+        attribute is set the way the SDK itself does. Persisted to
+        konnect.cfg so a restart keeps it, and the firmware string is
+        re-derived for the new type.
+        """
+        if self.token:
+            raise RuntimeError("Unregister before changing the printer type")
+        self._Printer__type = member
+        self.cfg.printer_type = member
+        if getattr(self.moonraker, "connected", True):
+            self.firmware = self._resolve_firmware()
+        written = self.cfg.write_printer_type(member.name)
+        log.info("Printer type set to %s (firmware %s, saved to %s)",
+                 member.name, self.firmware, written or "nowhere")
 
     def _apply_pinned_server(self) -> None:
         """Reconcile an operator-pinned PCL address with the stored one.
@@ -461,6 +511,40 @@ class KonnectPrinter(SDKPrinter):
                     self.actions._active_extruder) + 1
             except ValueError:
                 active = 1
+        if self.tree_tools:
+            # Tree shape: heads "0".."n-1", features under their
+            # architecture names, the loaded material as a package
+            # instance (null = nothing loaded) with its colour.
+            info["tool_count"] = tool_count
+            info["tools"] = {}
+            for index in range(1, tool_count + 1):
+                tool = tools.get(str(index))
+                material = (tool and tool.material) or "---"
+                instance = None
+                if material != "---":
+                    spec: dict[str, Any] = {"class": "FFF", "abbreviation": material}
+                    if tool and tool.color:
+                        spec["primary_color"] = {"color_rgba": tool.color}
+                    instance = {
+                        "class": "FFF",
+                        "package": {"class": "FFF", "material": spec},
+                    }
+                info["tools"][str(index - 1)] = {
+                    "type": "FFF_PRINT_HEAD",
+                    "features": {
+                        "nozzle_diameter": (tool and tool.nozzle_diameter) or 0.4,
+                        "nozzle_hardened": False,
+                        "nozzle_high_flow": False,
+                    },
+                    "feeder": None,
+                    "material_package_instance": instance,
+                }
+            picked = info["tools"].get(str(active - 1)) or info["tools"]["0"]
+            info["nozzle_diameter"] = picked["features"]["nozzle_diameter"]
+            # The name, not a made-up device code, is what a custom
+            # server knows this profile by.
+            info["printer_type"] = self.type.name
+            return info
         info["tools"] = {}
         for index in range(1, tool_count + 1):
             tool = tools.get(str(index))

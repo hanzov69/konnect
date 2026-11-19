@@ -662,6 +662,200 @@ def test_hidden_paths_are_kept_from_listings():
         ]
 
 
+def _u1_printer(tmp, printer_type="U1", backend="pcl"):
+    from konnect import printer_types
+    printer_types.install()
+    from konnect.config import Config
+    from konnect.printer import KonnectPrinter
+    from prusa.connect.printer.const import PrinterType
+
+    cfg = Config()
+    cfg.backend = backend
+    cfg.pcl_host = "pcl.lan"
+    cfg.local_gcode_path = tmp
+    cfg.log_path = ""
+    cfg.printer_type = getattr(PrinterType, printer_type)
+    printer = KonnectPrinter(cfg)
+    printer.sn = "SN1"
+    printer.fingerprint = "f" * 50
+    return printer
+
+
+def test_native_u1_profile_registers_by_name_with_real_firmware():
+    """The native profile stops pretending: the server learns the model
+    'U1' and the machine's own firmware (Klipper's software_version),
+    not a Buddy-looking version."""
+    import tempfile
+    from types import SimpleNamespace
+
+    with tempfile.TemporaryDirectory() as tmp:
+        printer = _u1_printer(tmp)
+        try:
+            calls = []
+
+            def moonraker(method, params=None, timeout=None):
+                calls.append(method)
+                if method == "printer.info":
+                    return {"software_version": "2.0.0-paxx12-24"}
+                return {}
+            printer.moonraker = moonraker
+            assert printer.cfg.effective_firmware() == ""  # no Buddy default
+            assert printer._resolve_firmware({}) == "2.0.0-paxx12-24"
+            printer.firmware = printer._resolve_firmware({})
+            # An operator override still wins.
+            printer.cfg.firmware_version = "9.9.9"
+            assert printer._resolve_firmware({}) == "9.9.9"
+            printer.cfg.firmware_version = ""
+            # Klipper unreachable: fall back to the OS version.
+            printer.moonraker = lambda *a, **k: None
+            assert printer._resolve_firmware(
+                {"system_info": {"distribution": {"version": "12"}}}) == "12"
+
+            printer.set_connection("http://pcl.lan:8080", "")
+            posts = []
+
+            def fake_post(url, headers=None, json=None, timeout=None):
+                posts.append(json)
+                return SimpleNamespace(status_code=200, headers={"Code": "AB12"})
+            printer.conn = SimpleNamespace(post=fake_post)
+            printer.register()
+            assert posts[0]["printer_type"] == "U1"
+            assert posts[0]["firmware"] == "2.0.0-paxx12-24"
+        finally:
+            printer.stop_loop()
+
+
+def test_native_u1_profile_reports_tree_shaped_tools():
+    """Heads counted from 0, tool_count, the loaded material as a package
+    instance with its colour, null for an empty head. The XL profile
+    keeps Buddy's numbered shape."""
+    import tempfile
+
+    from konnect.models import Tool
+
+    with tempfile.TemporaryDirectory() as tmp:
+        printer = _u1_printer(tmp)
+        try:
+            printer.moonraker = lambda *a, **k: {}
+            printer.actions.extruders = [
+                "extruder", "extruder1", "extruder2", "extruder3"]
+            printer.actions._active_extruder = "extruder2"
+            printer.actions.info.tools = {
+                "1": Tool(0.4, "PLA", "#E72F1D"),
+                "2": Tool(None, "---", None),
+                "3": Tool(0.4, "PETG", None),
+                "4": Tool(0.4, "PLA", "#6F4C2F"),
+            }
+            assert printer.tree_tools
+            info = printer.get_info()
+            assert info["tool_count"] == 4
+            assert "slots" not in info
+            assert sorted(info["tools"]) == ["0", "1", "2", "3"]
+            head = info["tools"]["0"]
+            assert head["type"] == "FFF_PRINT_HEAD"
+            assert head["features"] == {
+                "nozzle_diameter": 0.4, "nozzle_hardened": False,
+                "nozzle_high_flow": False,
+            }
+            assert head["feeder"] is None
+            mat = head["material_package_instance"]["package"]["material"]
+            assert mat["abbreviation"] == "PLA"
+            assert mat["primary_color"] == {"color_rgba": "#E72F1D"}
+            assert info["tools"]["1"]["material_package_instance"] is None
+            assert "primary_color" not in \
+                info["tools"]["2"]["material_package_instance"]["package"]["material"]
+            assert info["printer_type"] == "U1"
+        finally:
+            printer.stop_loop()
+
+        xl = _u1_printer(tmp, "XL")
+        try:
+            xl.moonraker = lambda *a, **k: {}
+            xl.actions.extruders = ["extruder", "extruder1"]
+            assert not xl.tree_tools
+            info = xl.get_info()
+            assert "tool_count" not in info
+            assert sorted(info["tools"]) == ["1", "2"]
+            assert info["slots"] == 2
+            assert info["printer_type"] == "3.1.0"
+        finally:
+            xl.stop_loop()
+
+
+def test_native_u1_profile_tree_telemetry_and_colour():
+    """Telemetry carries the tree `tools` block instead of `slot`, and
+    the spool colour is read from print_task_config's RRGGBBAA."""
+    printer, actions = make_actions()
+    printer.tree_tools = True
+    status = dict(U1_STATUS)
+    status["print_task_config"] = dict(U1_FILAMENT, filament_color_rgba=[
+        "E72F1DFF", "FFFFFFFF", "F72323FF", "6F4C2FFF"])
+    moonraker = StubMoonraker(U1_OBJECTS, status)
+    actions.subscribe(moonraker, {})
+    sent = printer.telemetry_calls[-1]
+    assert sent.get("slot") is None
+    tools = sent["tools"]
+    assert sorted(tools) == ["0", "1", "2", "3"]
+    assert tools["2"] == {
+        "type": "FFF_PRINT_HEAD", "active": True,
+        "nozzle_temp": 215.4, "nozzle_target_temp": 220,
+    }
+    assert tools["0"]["active"] is False
+    assert tools["0"]["nozzle_target_temp"] == 0
+    # Colours land on the tools, none for the empty head.
+    assert actions.info.tools["1"].color == "#E72F1D"
+    assert actions.info.tools["2"].color is None
+    assert actions.info.tools["4"].color == "#6F4C2F"
+    assert actions.snapmaker is False  # stub object list lacks print_task_config
+    moonraker.objects = U1_OBJECTS + ["print_task_config"]
+    actions._detect_extruders(moonraker)
+    assert actions.snapmaker is True
+
+
+def test_set_type_persists_and_is_locked_once_registered():
+    """The onboarding page's choice takes effect at once and survives a
+    restart: written as a line edit so comments in konnect.cfg stay."""
+    import tempfile
+
+    from konnect.config import Config
+    from prusa.connect.printer.const import PrinterType
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "konnect.cfg"
+        cfg_path.write_text(
+            "# my notes\n[konnect]\nbackend = pcl\n"
+            "printer_type: XL   # old\npcl_host = pcl.lan\n", encoding="utf-8")
+        cfg = Config.load(str(cfg_path))
+        assert cfg.path == cfg_path
+        assert cfg.write_printer_type("U1") == cfg_path
+        text = cfg_path.read_text(encoding="utf-8")
+        assert "# my notes" in text and "pcl_host = pcl.lan" in text
+        assert "printer_type = U1\n" in text and "XL" not in text
+
+        # No printer_type line yet: inserted under [konnect].
+        cfg_path.write_text("[konnect]\nbackend = pcl\n", encoding="utf-8")
+        cfg.write_printer_type("U1")
+        assert cfg_path.read_text(encoding="utf-8").startswith(
+            "[konnect]\nprinter_type = U1\nbackend = pcl\n")
+
+        printer = _u1_printer(tmp, "XL")
+        try:
+            printer.cfg.path = cfg_path
+            printer.moonraker = lambda *a, **k: {}
+            printer.set_type(PrinterType.U1)
+            assert printer.type is PrinterType.U1
+            assert printer.cfg.printer_type is PrinterType.U1
+            printer.token = "TOKEN"
+            try:
+                printer.set_type(PrinterType.XL)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("a registered printer must not change type")
+        finally:
+            printer.stop_loop()
+
+
 def test_config_load_accepts_str_path():
     """`konnect --config <path>` hands a str to Config.load (found on
     the U1: it crashed with 'str' has no attribute 'is_file')."""

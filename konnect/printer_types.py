@@ -37,7 +37,18 @@ _EXTENSIONS: tuple[tuple[str, tuple[int, int, int]], ...] = (
     ("MINI",     (2, 1, 0)),
     ("XL",       (3, 1, 0)),
     ("IX",       (4, 1, 0)),
+    # Not a Prusa model. A self-hosted Connect server admits a printer
+    # whose type it has no profile for and lists it under the name it
+    # registered with, so a Snapmaker U1 can stop pretending to be an
+    # XL: four heads instead of the XL's five, its real firmware, and
+    # per-head material with colour. The official cloud rejects it —
+    # only offered for the custom-server backend. The code is made up
+    # and well clear of Prusa's.
+    ("U1",       (99, 1, 0)),
 )
+
+# Types that only a self-hosted server understands.
+CUSTOM_SERVER_ONLY: frozenset[str] = frozenset({"U1"})
 
 
 def _extend(name: str, value: tuple[int, int, int]) -> None:

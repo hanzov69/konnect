@@ -99,6 +99,10 @@ class Config:
     # need a specific string.
     firmware_version: str = ""
 
+    # Where the config was read from (the file a setting changed in the
+    # UI is written back to). None when running on defaults.
+    path: Path | None = None
+
     @classmethod
     def load(cls, path: Path | str | None = None) -> "Config":
         cfg = cls()
@@ -107,11 +111,50 @@ class Config:
         for candidate in candidates:
             if candidate and candidate.is_file():
                 cfg._apply_file(candidate)
+                cfg.path = candidate
                 log.info("Loaded config from %s", candidate)
                 break
         else:
             log.info("No konnect.cfg found — using defaults")
+            cfg.path = next((c for c in candidates if c), None)
         return cfg
+
+    def write_printer_type(self, name: str) -> Path | None:
+        """Persist ``printer_type = <name>`` to the config file.
+
+        A line edit rather than a ConfigParser round-trip, so an
+        operator's comments and ordering survive. Creates the file with
+        a [konnect] section when there is none yet. Returns the path
+        written, or None when there is nowhere to write.
+        """
+        if self.path is None:
+            return None
+        path = Path(self.path)
+        lines: list[str] = []
+        if path.is_file():
+            lines = path.read_text(encoding="utf-8").splitlines()
+        replaced = False
+        section_at = None
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.lower() == "[konnect]":
+                section_at = index
+                continue
+            if section_at is not None and stripped.startswith("["):
+                break  # another section begins
+            key = stripped.split("=", 1)[0].split(":", 1)[0].strip()
+            if section_at is not None and key == "printer_type":
+                lines[index] = f"printer_type = {name}"
+                replaced = True
+                break
+        if not replaced:
+            if section_at is None:
+                lines = ["[konnect]"] + lines
+                section_at = 0
+            lines.insert(section_at + 1, f"printer_type = {name}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
 
     def _apply_file(self, path: Path) -> None:
         parser = configparser.ConfigParser()

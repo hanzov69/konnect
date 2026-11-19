@@ -84,6 +84,9 @@ class Actions:
         # the picked head.
         self.extruders: list[str] = ["extruder"]
         self._active_extruder = "extruder"
+        # Snapmaker firmware is recognised by its print_task_config
+        # object — the onboarding UI pre-selects the native U1 profile.
+        self.snapmaker = False
         self._slot_state: dict[str, dict] = {}
         # Snapmaker firmware publishes the loaded filament of every head
         # as parallel arrays on print_task_config (filament_type,
@@ -175,7 +178,7 @@ class Actions:
             # head). Absent on vanilla Klipper — Moonraker just omits it.
             "print_task_config": [
                 "filament_type", "filament_exist", "filament_vendor",
-                "filament_sub_type",
+                "filament_sub_type", "filament_color_rgba",
             ],
             "save_variables": ["variables"],
             # `extruder` is the picked head's name on a toolchanger.
@@ -193,6 +196,7 @@ class Actions:
         result = moonraker("printer.objects.list", timeout=2.0)
         if not result:
             return
+        self.snapmaker = "print_task_config" in result.get("objects", [])
         found = sorted(
             (name for name in result.get("objects", [])
              if name == "extruder" or re.fullmatch(r"extruder\d+", name)),
@@ -282,7 +286,22 @@ class Actions:
         # head's.
         new.temp_nozzle = picked.get("temp")
         new.target_nozzle = picked.get("target")
-        if len(self.extruders) > 1:
+        if getattr(self.printer, "tree_tools", False):
+            # Native profile: the tree shape, heads counted from 0.
+            tools: dict = {}
+            for index, name in enumerate(self.extruders):
+                entry = self._slot_state.get(name)
+                if not entry or "temp" not in entry:
+                    continue
+                tools[str(index)] = {
+                    "type": "FFF_PRINT_HEAD",
+                    "active": name == self._active_extruder,
+                    "nozzle_temp": entry["temp"],
+                    "nozzle_target_temp": entry.get("target", 0) or 0,
+                }
+            if tools:
+                new.tools = tools
+        elif len(self.extruders) > 1:
             slot: dict = {}
             for index, name in enumerate(self.extruders, start=1):
                 entry = self._slot_state.get(name)
@@ -361,13 +380,14 @@ class Actions:
         """
         config = params.get("print_task_config")
         if isinstance(config, dict):
-            for key in ("filament_type", "filament_exist"):
+            for key in ("filament_type", "filament_exist", "filament_color_rgba"):
                 if isinstance(config.get(key), list):
                     self._filament[key] = config[key]
         types = self._filament.get("filament_type")
         if not types:
             return
         exists = self._filament.get("filament_exist")
+        colors = self._filament.get("filament_color_rgba") or []
         for index, name in enumerate(self.extruders):
             if index >= len(types):
                 break
@@ -375,10 +395,20 @@ class Actions:
             if exists is not None and index < len(exists):
                 loaded = bool(exists[index])
             kind = types[index]
-            material = (
-                str(kind) if loaded and kind and kind != "NONE" else "---"
-            )
-            self._slot_state.setdefault(name, {})["material"] = material
+            entry = self._slot_state.setdefault(name, {})
+            if loaded and kind and kind != "NONE":
+                entry["material"] = str(kind)
+                # "E72F1DFF" (RRGGBBAA) → "#E72F1D"; alpha carries nothing.
+                rgba = str(colors[index]) if index < len(colors) else ""
+                entry["color"] = (
+                    "#" + rgba[:6].upper()
+                    if len(rgba) >= 6 and all(
+                        c in "0123456789abcdefABCDEF" for c in rgba[:6])
+                    else None
+                )
+            else:
+                entry["material"] = "---"
+                entry["color"] = None
 
     def send_telemetry(self, _moonraker, params: dict) -> None:
         self._ingest_filament(params)
@@ -411,10 +441,12 @@ class Actions:
         new_info = Info(len(self.extruders))
         nozzle = nested_get(params, "save_variables", "variables", "nozzle")
         for index, name in enumerate(self.extruders, start=1):
-            material = self._slot_state.get(name, {}).get("material")
+            head = self._slot_state.get(name, {})
+            material = head.get("material")
             if material is None and len(self.extruders) == 1:
                 material = self.telemetry.material
-            new_info.tools[str(index)] = Tool.from_variables(nozzle, material)
+            new_info.tools[str(index)] = Tool.from_variables(
+                nozzle, material, head.get("color"))
         info_changed = self.info.update(new_info)
 
         if state_str := nested_get(params, "print_stats", "state"):

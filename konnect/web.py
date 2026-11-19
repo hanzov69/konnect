@@ -42,6 +42,7 @@ from prusa.connect.printer.const import (
     State,
 )
 
+from . import printer_types
 from .camera import (
     discover_crowsnest_cameras,
     discover_moonraker_webcams,
@@ -70,8 +71,22 @@ SUPPORTED_PRINTER_TYPES: tuple[str, ...] = ("HT90", "MK4S", "COREONE")
 # Buddy device models; HT90 may not be among them).
 DEFAULT_PRINTER_TYPE: str = "HT90"
 DEFAULT_PRINTER_TYPE_PCL: str = "MK4S"
+# What the wizard pre-selects on Snapmaker firmware.
+DEFAULT_PRINTER_TYPE_SNAPMAKER: str = "U1"
 
 PRINTER_TYPE_HINTS_PCL: dict[str, dict[str, str]] = {
+    "U1": {
+        "label": "Snapmaker U1 (native)",
+        "description": (
+            "Registers as a U1, not a Prusa model: the server shows the "
+            "four heads with the material and colour loaded in each, "
+            "and the printer's real firmware version. Uploads, pause/"
+            "resume/stop and per-head temperatures work. The server has "
+            "no profile for it, so it shows a generic printer icon."
+        ),
+        "recommended_for": "Snapmaker U1 on a self-hosted server",
+        "warning": "",
+    },
     "MK4S": {
         "label": "Prusa MK4S (recommended)",
         "description": (
@@ -93,14 +108,15 @@ PRINTER_TYPE_HINTS_PCL: dict[str, dict[str, str]] = {
         "warning": "",
     },
     "XL": {
-        "label": "Prusa XL (toolchanger)",
+        "label": "Prusa XL (toolchanger emulation)",
         "description": (
-            "The toolchanger profile. konnect detects every Klipper "
+            "Pretend to be a Prusa XL. konnect detects every Klipper "
             "extruder (extruder, extruder1, …) and reports per-head "
-            "temperatures the Buddy way, so a multi-tool machine like "
-            "the Snapmaker U1 shows all of its heads."
+            "temperatures and materials the Buddy way. The server draws "
+            "the XL's five heads, so a four-head machine shows a blank "
+            "fifth."
         ),
-        "recommended_for": "Toolchangers — Snapmaker U1, multi-extruder Klipper",
+        "recommended_for": "Multi-extruder Klipper machines other than the U1",
         "warning": "",
     },
     "HT90": {
@@ -430,6 +446,24 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
                 HTTPStatus.CONFLICT,
             )
         payload = request.get_json(silent=True) or {}
+        if wanted := (payload.get("printer_type") or "").strip():
+            member = getattr(PrinterType, wanted, None)
+            if member is None or not isinstance(member, PrinterType):
+                return (
+                    jsonify({"error": f"Unknown printer type {wanted!r}"}),
+                    HTTPStatus.BAD_REQUEST,
+                )
+            if (wanted in printer_types.CUSTOM_SERVER_ONLY
+                    and printer.backend != "pcl"):
+                return (
+                    jsonify({"error": (
+                        f"{wanted} is only understood by a custom server; "
+                        "the official Prusa Connect needs a Prusa model"
+                    )}),
+                    HTTPStatus.BAD_REQUEST,
+                )
+            if printer.type is not member:
+                printer.set_type(member)
         if sn := payload.get("serial_number"):
             printer.db.set("serial_number", value=sn)
         if name := payload.get("name"):
@@ -465,10 +499,14 @@ def _register_api_routes(app: Flask, printer: KonnectPrinter) -> None:
                 "recommended_for": hint["recommended_for"],
                 "warning": hint.get("warning", ""),
             })
+        default = DEFAULT_PRINTER_TYPE
+        if is_pcl:
+            default = DEFAULT_PRINTER_TYPE_PCL
+            if getattr(getattr(printer, "actions", None), "snapmaker", False):
+                default = DEFAULT_PRINTER_TYPE_SNAPMAKER
         return jsonify({
             "current": printer.type.name if printer.type else None,
-            "default": DEFAULT_PRINTER_TYPE_PCL if is_pcl
-            else DEFAULT_PRINTER_TYPE,
+            "default": default,
             "backend": printer.backend,
             "types": types,
         })

@@ -86,9 +86,12 @@ printer side of that protocol in `konnect/pcl.py`.
 Because the transport is the real Buddy one, the cloud's big limitation
 disappears: **uploads from the server's dashboard work** (files arrive
 via `START_INLINE_DOWNLOAD` + binary chunks — no encrypted
-side-channel). Pick `MK4S`, `COREONE` (chamber controls) or `XL`
-(toolchanger) as the printer type; `HT90` is the cloud recommendation,
-not the right pick here.
+side-channel). Pick `MK4S`, `COREONE` (chamber controls), `XL`
+(toolchanger emulation) or, on a Snapmaker U1, the native `U1` profile
+(four heads with material and colour, the printer's real firmware; the
+server has no profile for it so it gets a generic icon). `HT90` is the
+cloud recommendation, not the right pick here. The onboarding page
+saves the choice to konnect.cfg.
 
 The easy path: in the onboarding UI's register step, choose **Custom
 server**, enter the hostname/port, and click *Get code*. konnect

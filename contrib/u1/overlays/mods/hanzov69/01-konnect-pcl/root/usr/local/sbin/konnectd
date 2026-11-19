@@ -25,8 +25,9 @@ export HOME=/home/lava
 # Defaults: konnect's own (the official Prusa Connect; HT90 profile).
 # An operator may pin a custom Connect-compatible server in
 # extended2.cfg ([konnect] pcl_host/pcl_port/pcl_tls) — only then is
-# konnect.cfg seeded for it, with the XL toolchanger profile (the U1 is
-# a 4-head toolchanger and custom servers profile Buddy device models).
+# konnect.cfg seeded for it, with the native U1 profile (a custom server
+# lists the printer under the name it registers with; Prusa XL emulation
+# remains a choice in konnect's onboarding page).
 # Normally the server choice is made in konnect's onboarding page and
 # no config file is needed at all. Seeding is a heredoc because this
 # image's extended-config.py refuses to create a missing file.
@@ -38,7 +39,7 @@ if [[ -n "$PCL_HOST" ]]; then
         cat > "$KONNECT_CFG" <<EOF
 [konnect]
 backend = pcl
-printer_type = XL
+printer_type = U1
 pcl_host = $PCL_HOST
 pcl_port = $PCL_PORT
 pcl_tls = $PCL_TLS

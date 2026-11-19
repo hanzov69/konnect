@@ -28,14 +28,18 @@ class Tool:
     """
     nozzle_diameter: float | None = None
     material: str | None = None
+    # "#rrggbb" of the loaded filament when the printer knows it (the
+    # Snapmaker U1 does, from the spool's RFID tag or the touchscreen).
+    color: str | None = None
 
     @classmethod
     def from_variables(
         cls,
         nozzle_str: str | None,
         material: str | None,
+        color: str | None = None,
     ) -> "Tool":
-        tool = cls(material=material)
+        tool = cls(material=material, color=color)
         if nozzle_str:
             try:
                 # Accept "0.4", "0.4 mm", "0.4 HF" — take the leading float.
@@ -57,6 +61,7 @@ class Tool:
         return {
             "nozzle_diameter": self.nozzle_diameter,
             "material": self.material,
+            "color": self.color,
         }
 
 
@@ -85,13 +90,18 @@ class Telemetry:
     # also what a 4-head Snapmaker U1 reports): {"1": {"temp": …}, …,
     # "active": n}. None on single-tool printers.
     slot: dict | None = None
+    # The newer tree shape (Buddy 8.0 / Prusa architecture) a
+    # self-hosted server also reads: {"0": {"type": "FFF_PRINT_HEAD",
+    # "active": bool, "nozzle_temp": …, "nozzle_target_temp": …}, …}.
+    # Used instead of `slot` for the native U1 profile.
+    tools: dict | None = None
 
     TEMP_VALUES = ("temp_bed", "temp_nozzle", "temp_chamber")
     OTHER_VALUES = (
         "fan_extruder", "fan_print", "target_bed", "target_nozzle",
         "progress", "filament", "time_printing", "time_remaining",
         "material", "target_chamber", "fan_chamber", "axis_x", "axis_y",
-        "axis_z", "speed", "flow", "slot",
+        "axis_z", "speed", "flow", "slot", "tools",
     )
     CHAMBER_VALUES = ("temp_chamber", "target_chamber", "fan_chamber")
 
